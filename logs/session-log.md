@@ -476,3 +476,82 @@ exploration already captured in the "CopilotKit org survey" entry above.
 **To resume cold**: read `CLAUDE.md` in full, then `FRD.md` in full, then act on the
 three-part recommendation in `CLAUDE.md`'s "Next action" (or check with the user first,
 since it was a recommendation awaiting their confirmation, not yet agreed direction).
+
+
+---
+
+### 2026-09-18 — Enterprise SDLC hardening: user directives, gap analysis, FRD amendment
+
+New session, resumed cold from the checkpoint above. Before acting on the prior
+three-part recommendation, the user issued a second architectural pivot prompt
+(the "Architectural Pivot to Agentic Control Plane" realignment memo — confirmed
+already consistent with committed `CLAUDE.md`/`FRD.md` state, no drift to correct)
+followed by a "Principal Engineering Directives" memo: five phases of enterprise
+SDLC rules (contract-driven interfaces, dependency inversion, absolute domain
+isolation, event-sourced state, idempotent/safe resumption, bounded autonomy,
+ephemeral sandboxing, fail-closed integrity, zero-trust credentialing,
+proof-over-prose verification, hermetic LLM testing, schema-validated telemetry).
+
+User asked to be told whether anything was missing for "100% certainty" of
+enterprise-grade output. Answer given: no requirement set makes that certain —
+these rules bound blast radius and make failures verifiable, they don't guarantee
+generated code is *correct* or *right*, only that failure is legible. Assessed the
+directives against `FRD.md` and surfaced 14 concrete gaps:
+1. No schema-versioning/compatibility policy for audit/plan contracts.
+2. Dependency inversion stated for LLM providers only, not telemetry/storage.
+3. No event-sourcing requirement (state mutated in place, not an append-only log).
+4. No crash-recovery/resumption requirement.
+5. ENV-* described environment capability, not isolation/untrusted-by-default.
+6. No pre-write gitignore check; no secret redaction for LLM *prompts* specifically
+   (only telemetry was covered).
+7. No supply-chain trust model for swappable knowledge packs.
+8. No hermetic-testing requirement family for the control plane's own test suite.
+9. Telemetry schema existed but without emission-time validation or enum-only
+   field constraints.
+10. No requirement that the control plane's own codebase meets a quality bar.
+11. No cost/time budget governance (token ceilings, wall-clock timeouts).
+12. No tamper-evidence on the event log itself.
+13. No handling for non-git side effects (git reset --hard only covers the tree).
+14. No requirement→test→telemetry traceability mechanism.
+
+User asked for recommendations, then said "yes, do it." All 14 resolved directly
+into `FRD.md`:
+- New/amended IDs: `AUDIT-6` (schema versioning), `KNOWLEDGE-4` (pack provenance +
+  allowlist + sandboxing for executable packs), `EXEC-6/7/8` (event sourcing,
+  crash resumption via event-log replay + baseline reset, concurrency lock),
+  `INTEGRITY-6/7/8` (pre-write gitignore check, hash-chained tamper-evident event
+  log, side-effect-class declaration on node templates gating auto-retry),
+  `PROVIDER-3` (dependency inversion extended to telemetry/storage), `TELEMETRY-4/5`
+  (emission-time schema validation, enum-only fields), `ENV-3/4` (ephemeral
+  untrusted sandbox, default-deny network egress).
+- New requirement families: `STORAGE-*` (§4.13), `PROMPT-*` (§4.14, secret
+  redaction on outbound LLM content), `TEST-*` (§4.15, hermetic test suite),
+  `BUDGET-*` (§4.16, cost/time governance), `PROCESS-*` (§4.17, the control
+  plane's own code-quality bar).
+- New `§9 Traceability` section: every requirement ID must map to at least one
+  test and, where applicable, telemetry event, enforced as a CI check — turns
+  §4 from a stated policy into a build-time-enforced contract.
+- New explicit scope caveat added to `§1`: this FRD governs process integrity,
+  not code correctness; human review of generated code remains load-bearing.
+- §6 acceptance criteria extended with four new system-level checks (items 9–13:
+  crash resumption, pre-write credential-exclusion halt, hermetic suite passing
+  with zero live network calls, mid-run budget-exceeded escalation, full
+  traceability coverage).
+- `§8` future-research item 1 (Strands SDK) amended to also evaluate against the
+  new EXEC-6/7/8, ENV-3/4, and BUDGET-* requirements — `sandbox/docker.py` and
+  `interventions` flagged as the modules most likely to already cover these.
+- `CLAUDE.md` decision log given a new 2026-09-18 entry summarizing this whole
+  arc.
+
+**State after this entry**: `FRD.md` now carries 17 requirement subsections
+(up from 12) plus §9. Still nothing built — this is still spec-only work.
+The prior session's still-open three-part recommendation (Strands SDK bounded
+evaluation, Phase 1 start, two user-only decisions on target repo + LLM
+credential) is unchanged and still awaiting action; it should now additionally
+be read against the newly added EXEC/ENV/BUDGET requirements before Strands is
+evaluated, since those are the ones most likely to shift the Strands
+go/no-go call.
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` in full (17
+requirement subsections + §9), then act on the three-part recommendation,
+now informed by the hardened requirement set above.
