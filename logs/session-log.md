@@ -555,3 +555,182 @@ go/no-go call.
 **To resume cold**: read `CLAUDE.md` in full, then `FRD.md` in full (17
 requirement subsections + §9), then act on the three-part recommendation,
 now informed by the hardened requirement set above.
+
+---
+
+### 2026-09-18 — Independent design review of `FRD.md`, accepted in full, and implemented (the "rightsizing pass")
+
+An independent staff-engineer-persona review of the committed `FRD.md` came back. It read
+the repo cold, verified the state itself first (`git ls-files`: 8 tracked files, all
+Markdown, zero source, zero tests, ~110KB of prose, 0 bytes of code), and returned a
+**conditional rejection**: approve the problem and the core mechanism, do not approve the
+document as the spec, because it could not say which 15 of its 60+ requirements were v1,
+and because its most expensive additions defended against its least likely adversary while
+its riskiest technical assumptions were unvalidated.
+
+The project owner accepted the review as accurate and asked for it to be *implemented*,
+not re-litigated. This entry records that implementation. **No code was written this
+session either — that is deliberate and is the next step, not this one.**
+
+**The review's three required changes, and what was done about each:**
+
+**(1) Tag every requirement and stop writing new ones.** `FRD.md` rewritten with a
+**[v1] / [v2] / [won't-do]** tag on every requirement ID. **28 v1 IDs** (27 governing a
+run, plus `PROCESS-1` governing this project's own codebase), down from 63 untagged
+`SHALL`s of uniform normative weight. About 18 IDs were *merged* rather than cut, because
+they were duplicate statements of one contract — `AUDIT-1` now absorbs former `AUDIT-2`
+and `AUDIT-5`; `PLAN-1` absorbs `AUDIT-3`, `PLAN-3`, `PLAN-4`; `EXEC-6` absorbs the
+`INTEGRITY-7` replacement, `BUDGET-4`, and half of `KNOWLEDGE-4`. Retired IDs are left
+**in place** with their disposition rather than deleted, so a later reader can see the
+absence was a decision. The review estimated ~15 v1; this landed at 28 and says so
+explicitly in the doc, with the reason (merging, not padding) stated rather than the
+number massaged.
+
+**(2) Fix the load-bearing soundness holes the hardening pass skipped.** All of them were
+cheap sentences and none of them were in the document:
+- `QA-2` rewritten — a verdict SHALL be derived by the control plane from **exit codes and
+  machine-readable test output** (TRX/JUnit/SARIF). A model may explain a failure and
+  propose a fix, recorded as commentary; it may never author, adjust, or summarize a
+  verdict. This is the entire substance of "proof over self-report," and the original
+  requirement had merely moved the self-report one agent to the left.
+- `PLAN-5` now freezes each phase's **declared scope, check set, and side-effect class**
+  at approval, and states explicitly that an executing phase cannot alter any phase's
+  check set. That closes the real attack surface: without it, the thing being verified
+  chooses what verifies it.
+- `QA-5` added — **delta-vs-baseline evaluation.** The full check set runs against the
+  baseline commit *before* the gate; later verdicts are deltas. Absolute green/red would
+  halt on phase one of every real legacy repo.
+- `INTEGRITY-9` added — a **dedicated run branch** off the baseline commit, never writing
+  to a pre-existing branch, never pushing, plus an explicit abandon/cleanup path and who
+  owns it. The review called this "the single cheapest, highest-value integrity
+  requirement in existence," and it was entirely missing: `INTEGRITY-1/2` implied commits
+  but never said where, and nothing said who cleaned up N commits after an escalation.
+- `EXEC-2` restated honestly (roles are a **configuration** constraint, not a capability
+  boundary, in a one-process/one-shell topology), absorbing former `QA-4` whose "SHALL
+  have no access to modify" asserted enforcement nothing provided. `EXEC-10` (v2) added as
+  the actual mechanism — verifier against an independent, non-writable checkout. `§3.2`
+  rewritten to say all this in prose, citing `research/G`'s own "there is a seam by
+  construction."
+- `APPROVAL-5` added — the rejection path, which was entirely unspecified. Decision:
+  **accept-all-or-abort**; partial approval is "edit the plan file and re-run," because an
+  editable gate makes "what was approved" ambiguous and `PLAN-5`'s freeze depends on that
+  being unambiguous. This also retires a long-standing documentation bug: `CLAUDE.md`
+  referenced "APPROVAL-1 through APPROVAL-5" when no `APPROVAL-5` had ever existed in any
+  version of the FRD.
+- `DIAG-1` added — a **verbose local diagnostic log, explicitly outside the telemetry
+  pipeline**, never exported, referenced by path from escalation reports. The pre-review
+  document had made telemetry so privacy-safe it could not explain a failure, then
+  provided no alternative.
+- `DISCLOSE-1` added — a third-party data-disclosure policy: what is sent to the provider,
+  what is never sent (including: a credential-shaped file inside a declared scope halts
+  the phase rather than being sent), and what the operator is responsible for (repo
+  eligibility, retention/training terms, not running against repos with live secrets).
+  This absorbs former `INTEGRITY-5`, whose "SHALL NOT read credential files" directly
+  contradicted the reference domain — migrating `web.config`/`appsettings.json` is the
+  core work.
+- `INTEGRITY-8`'s follow-through written in. The review's sharpest catch: automatic
+  baseline-reset retry only applies to `file-only` phases, but in the .NET reference
+  domain the substantive phases (package upgrades, SDK retargeting) are
+  `package-manager-mutating` by definition — so the expensive crash-recovery machinery
+  covered approximately the phases that don't matter. The manual compensating-action path
+  is now a **first-class documented outcome** with a required section in the escalation
+  report (lockfile paths touched, restore/cache commands to re-run, whether a global cache
+  was mutated), and `EXEC-7` was correspondingly downgraded to "detect, lock, and halt
+  with a resume report," with automatic resumption moved to `EXEC-9` (v2).
+
+**(3) Delete or demote the ceremony, and say why in the doc so it stays deleted.**
+- **won't-do**: `INTEGRITY-7` (hash-chained log — wrong adversary; the only writer is the
+  same process as the same user holding everything needed to recompute the chain. Replaced
+  by `EXEC-6` committing the event log into the run branch, where git's content-addressed
+  parent-chained objects give tamper-evidence for free — deleting a requirement instead of
+  adding one); `STORAGE-1/2` (decided outright: JSONL + run branch); `KNOWLEDGE-4`'s
+  allowlist/signing/opt-in half; `TELEMETRY-4/5`; `PROMPT-1/2`; `PROVIDER-3`.
+- **v2 with named promotion triggers**: `PROVIDER-1/2` (and acceptance criterion 7 deleted
+  as vacuous — satisfiable by a hello-world completion); `ENV-3/4`; `TELEMETRY-1/2/3`;
+  `UIATTACH-*`; `KNOWLEDGE-1/2/3`; `PLAN-2`; `AUDIT-4/6`; `INTEGRITY-4`; `TEST-3/4`
+  (rescoped to three boundaries, not nine).
+- The **.NET Framework / Linux-container contradiction is now written directly next to
+  `ENV-3`** with a ⚠ marker, along with `ENV-4`'s two blockers (private authenticated
+  feeds; dependence on `ENV-3`), specifically so neither gets silently re-promoted by a
+  future session reading only the requirement text.
+
+**Also done, beyond the three required changes:**
+- **`§5` threat model added** (half a page), naming three conflated adversaries: (a) a
+  sloppy/confused LLM — the only real v1 threat, and every control aimed at it is v1 and
+  cheap; (b) a compromised knowledge pack — one pack, one author, local disk, no
+  distribution channel; (c) a malicious operator forging their own log — not a threat at
+  all here, and the target of the most expensive rejected requirements. This section
+  exists so the cuts stay cut for a stated reason rather than being re-added as
+  "hardening" next time.
+- **`§7` Out of scope written.** `FRD.md` §1 had said "Out of scope (see §7)" since the
+  first version; there had never been a §7. (Nor a §5 — that hole is now the threat
+  model.) Related: the review re-derived `logs/session-log.md:406-411`'s claim that the
+  original FRD contained §5, §7, and a §9 linking requirements to research findings, and
+  found from `git show HEAD:FRD.md` that it contained sections 1, 2, 3, 4, 6, 8 only.
+  **That is an unverified self-report in this very log that did not survive re-derivation
+  from the source of truth — precisely the failure mode `QA-2` exists to prevent.** Noted
+  here rather than edited out of the earlier entry, since this log is append-only.
+- **`§9` traceability rescoped** to **v1-tagged IDs only** — the original would have been
+  red against 60+ unimplemented requirements from the first commit, guaranteeing an
+  immediate blanket exemption list, which is the exact silent gap the mechanism exists to
+  prevent. The requirement→**rationale** linkage the hardening amendment had overwritten
+  is restored, in a more durable form: written inline next to each requirement, plus a
+  list of the principal rationale sources (`research/A`, `E`, `F`, `G`, the journal, and
+  this review).
+- **`§10` Known open issues added** — explicitly *not* resolved this pass, recorded as
+  open rather than silently absent: pre-existing repo state (**git hooks are the urgent
+  one** — a `husky`/`pre-commit` reformat-on-commit hook will trip `INTEGRITY-3` on every
+  phase, a guaranteed false-positive source), context-window management for large
+  solutions (plausibly the hardest problem in the system, deliberately not specified from
+  an armchair), mid-run human intervention, audit idempotency, whether the
+  domain-agnostic boundary is in the right place, authenticated private package feeds, and
+  flaky checks. Each is expected to be forced into resolution by the vertical slice.
+- **`§8` rewritten** from "future research items" into **open questions requiring a spike,
+  not a requirement**, each answerable in an afternoon. The Strands Agents SDK evaluation
+  — the standing recommendation from the previous two sessions — was **explicitly
+  deprioritized to item 6**, because the requirements it would most affect (`ENV-3/4`,
+  `TELEMETRY-*`, `PROVIDER-*`) are now all v2 or won't-do, and adopting a framework to
+  satisfy deferred requirements is the exact inversion this pass was correcting.
+- **`§11` Revision note added** — a table of what was cut and why, what was added and why,
+  and the process finding behind it: a gap analysis with a 100% conversion rate is an
+  inventory being transcribed, not a design process, because real design is mostly saying
+  "acknowledged risk," "needs a spike first," or "wrong threat model" — and not one of the
+  previous session's 14 gaps received any of those.
+
+**`IMPLEMENTATION-PLAN.md` re-sequenced** from Phases 0–8 to **A–F**, tagged against the
+new v1/v2 split:
+- **Phase A — vertical slice, no LLM at all**, and it comes first, ahead of the reference
+  knowledge pack. Hand-written `plan.json` → baseline commit → run branch → baseline check
+  run → CLI gate → scripted edit → commit-per-phase → `git diff` vs declared scope →
+  escalate → JSONL event log in the run branch → local diagnostic log. Exercises 15 of the
+  28 v1 requirements and needs no model credential. Its exit criteria are specific
+  `FRD.md` §6 acceptance items.
+- **Phase B — three spikes in parallel**: Windows-container .NET Framework build (decides
+  `ENV-3`'s fate), authenticated private NuGet feeds, `git worktree` verifier isolation
+  (`EXEC-10`, possibly ~30 lines, possibly promotable to v1 immediately).
+- **Phase C** (reference pack) explicitly changed from "MCP server" to "versioned
+  directory + CLI," per the new `KNOWLEDGE-1`.
+- **Phase D** grouping restricted to category + declared-path overlap; blast radius held
+  at v2 pending the decision about whether it belongs in the pack.
+- **Phase E** adds the model to an already-working spine. **Phase F** is real-repo
+  validation. Old Phases 0/3/5/7 (OpenBot UI, multi-provider, telemetry, sandboxing) are
+  collected under "Deferred — all now FRD v2" with their reasons.
+
+**`CLAUDE.md` updated**: "Next action" replaced (build Phase A; run Phase B spikes; the
+only blocking user decision is now a target repo, and the LLM-credential decision is no
+longer urgent since nothing before Phase E needs one); headline findings rewritten around
+the actual load-bearing facts; "The design, as agreed so far" amended with inline
+`~~strikethrough~~` corrections rather than quiet deletions (following `research/G`'s own
+convention) for the three overclaims — "MCP server is the brain," "file-hash baseline of
+the whole tree," and "exactly one consolidated human approval gate"; the constraints
+section now states plainly that **the specification phase is over**; a new dated decision
+log entry records the whole rightsizing.
+
+**What this pass deliberately did *not* do**: write any of the Phase A code. That is the
+next session's work, and doing it here would have repeated the pattern the review
+identified — answering a request with more artifacts instead of with a running program.
+
+**To resume cold**: read `CLAUDE.md`, then `FRD.md` (especially §5, §8, §10, §11), then
+build `IMPLEMENTATION-PLAN.md` Phase A. The single most useful line in the review, kept
+verbatim because it is the whole instruction: *"The fastest route back to the former is a
+build directory."*

@@ -1,61 +1,67 @@
 # InstallGraph: Agentic Control Plane
 
-Autonomous, MCP-backed, graph-based Agentic Control Plane. 
+Autonomous, graph-based Agentic Control Plane, backed by a swappable knowledge pack. *(Was "MCP-backed" — MCP is a v2 option as of the 2026-09-18 rightsizing, not a v1 commitment; see `FRD.md` `KNOWLEDGE-1`.)*
 
-**Core Identity Pivot:** This system is a generalized domain-agnostic orchestrator (an Agentic Control Plane). It oversees complex, multi-phase codebase transformations driven by swappable MCP knowledge packs. 
+**Core Identity Pivot:** This system is a generalized domain-agnostic orchestrator (an Agentic Control Plane). It oversees complex, multi-phase codebase transformations driven by swappable knowledge packs. *(Domain-agnosticism is an intent generalized from zero implemented domains, not a validated property — `FRD.md` §1 and §10.5.)* 
 *First reference implementation:* upgrading a .NET Framework codebase to .NET Core, driven by an audit file, coordinated by a multi-agent CLI control plane, optionally fronted by a chat UI.
 
 This file is the resumption point. If a session restarts (usage limit, compaction, new machine), **read this file in full first**, then read `FRD.md` (the primary spec), then check `research/README.md` for which research tracks are done, then check `logs/session-log.md` for the most recent entries, then continue from "Next action" below.
 
 ## Next action
 
-**`FRD.md` now exists and is the primary spec** (updated 2026-09-18)
-A tool-agnostic functional requirements document synthesizing everything below into numbered, testable requirements (AUDIT-*, PLAN-*, EXEC-*, QA-*, APPROVAL-*, INTEGRITY-*, ESCALATE-*, PROVIDER-*, TELEMETRY-*, ENV-*, UIATTACH-*, KNOWLEDGE-*). Read it first in a fresh session.
+**`FRD.md` was rightsized on 2026-09-18** after an independent staff-engineer design review (accepted in full). It is still the primary spec, and it is now **prioritized**: every requirement carries a **[v1] / [v2] / [won't-do]** tag. **28 IDs are v1**, down from 63 untagged `SHALL`s. It gained a threat model (§5), a real out-of-scope section (§7), open technical questions needing spikes (§8), known open issues (§10), and a revision note recording exactly what was cut and why (§11).
 
-`IMPLEMENTATION-PLAN.md` (Phase 0-8) is now a *candidate realization* of that FRD, not the primary plan. It positions the .NET migration explicitly as Phase 1 (Reference Plugin), decoupling it from the core control plane.
+`IMPLEMENTATION-PLAN.md` was re-sequenced to match: phases are now **A–F**, and **Phase A is a no-LLM vertical slice** that comes before everything, including before the reference knowledge pack.
 
-**Nothing has been built yet.**
+**Nothing has been built yet — and that is now the single most important fact about this project.** The review's sharpest finding: ~110KB of prose, 0 bytes of code, and ~200 lines of Python would have answered more open questions than the last three sessions of writing did. **The next work is a build directory, not another FRD amendment.** Treat any new requirement proposed before Phase A runs with suspicion.
 
-**Next action for a fresh session**: read `FRD.md` in full, then this session's standing recommendation:
-1. **Do a bounded evaluation of the Strands Agents SDK future-research item (`FRD.md` §8 item 1) before investing further in `IMPLEMENTATION-PLAN.md` Phases 3-5.**
-   Specifically resolve whether `sandbox/docker.py` can host a real build/test workflow (ENV-1/ENV-4), whether `interventions`/`hooks` satisfy APPROVAL-1 through APPROVAL-5's exact shape, and whether `telemetry`'s event schema meets TELEMETRY-2's privacy constraints as-is.
-2. **Start `IMPLEMENTATION-PLAN.md` Phase 1 (reference audit engine / knowledge source) in parallel, regardless of (1)'s outcome**
-   It only touches AUDIT-*/KNOWLEDGE-*, which don't depend on the orchestration/provider/telemetry questions Strands would affect.
-3. **Get two decisions only the user can make**: a real target repo to validate against eventually, and which LLM provider credential is actually in hand right now. Neither blocks (1) or (2).
+**Next action for a fresh session**: read `FRD.md` in full (especially §5 threat model, §8 spikes, §10 open issues, §11 what-was-cut), then:
+1. **Build `IMPLEMENTATION-PLAN.md` Phase A — the vertical slice, no LLM.** Hand-written plan file → baseline commit → run branch → baseline check run → CLI approval gate → scripted edit → commit-per-phase → `git diff` vs declared scope → escalate on violation → JSONL event log committed into the run branch. This exercises 15 of the 28 v1 requirements and needs no model credential.
+2. **Run `IMPLEMENTATION-PLAN.md` Phase B spikes in parallel** (each ~an afternoon, each resolves a documented contradiction): (B1) does .NET Framework MSBuild run in a Windows container on this host at all — decides whether FRD `ENV-3` is promotable or a permanent won't-do; (B2) authenticated private NuGet feeds; (B3) second `git worktree` as a read-only verifier view (FRD `EXEC-10`).
+3. **One decision only the user can make, and it now blocks Phase A**: a real (or small stand-in) .NET Framework repo to run against. The LLM-provider decision is **no longer urgent** — `PROVIDER-1` is v2, v1 ships on one model, and nothing before Phase E needs a credential.
+4. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6). It mostly bears on `ENV-3/4`, `TELEMETRY-*`, and `PROVIDER-*`, all of which are now v2 or won't-do. Adopting a framework to satisfy deferred requirements is the inversion the rightsizing pass was correcting.
 
 Headline findings so far (Corrected 2026-09-18):
-- **Universal Contract:** The control plane strictly enforces governance (git-native baselines, proof over self-report). The MCP purely supplies the domain knowledge (audit rules, node templates).
-- No existing product should be forked (Track A). Copilot upgrade agent validates the approach but has a proprietary license. AppCAT has the same license; building a custom reference static analyzer for the .NET proof-of-concept (Phase 1).
-- Our coordinator/implementer/QA core is a **standalone process** (the Agentic Control Plane). It calls the MCP directly, runs its own git/shell commands directly, and has its own CLI-based approval gate.
-- **OpenBot is optional, attached on top, never load-bearing.** When attached, the same process registers as one bring-your-own-agent AG-UI Bot.
+- **The load-bearing control is `INTEGRITY-3`** — post-phase `git diff` against the plan's declared scope, fail closed, on a dedicated run branch. It is ~50 lines and it is the only thing closing the seam the standalone design creates (`research/G-trust-layer-reconciliation.md`). If exactly one requirement gets built, it is this one.
+- **Role separation is a convention, not a boundary, in v1.** Coordinator / implementer / verifier share one process, one shell, one working copy. `FRD.md` §3.2 and `EXEC-2` now say so honestly instead of asserting enforcement that doesn't exist; `EXEC-10` (v2) names the mechanism that would make it real.
+- **"Proof over self-report" now has a mechanism**: `QA-2` requires verdicts to be derived by the control plane from exit codes and machine-readable test output (TRX/JUnit/SARIF). A model may explain a failure; it may never author a verdict. Check sets are frozen at the approval gate so an executing phase cannot influence what verifies it.
+- **Legacy repos don't build clean**, so `QA-5` evaluates every check as a **delta** against baseline results captured before the gate — absolute green/red would halt on phase one of every real repository.
+- **The knowledge pack is a versioned directory + CLI for v1, not an MCP server.** The doc never asked what MCP buys; `KNOWLEDGE-1` now asks it explicitly and gates MCP on a written-down case where the implementer model must call pack tools live mid-phase.
+- No existing product should be forked (Track A). Copilot upgrade agent validates the approach but has a proprietary license, as does AppCAT; building a custom reference static analyzer (Phase C).
+- **OpenBot is optional, attached on top, never load-bearing** — and is now v2 (`UIATTACH-*`). Headless-first enforces the "never load-bearing" property for free.
+- **"Domain-agnostic" is an intent, not a validated property.** It is being generalized from zero implemented domains and is already leaking (`INTEGRITY-8`, `ENV-1`, `PLAN-2`). Build the .NET path concretely; extract the core when a second domain forces the seam.
 
 ## The design, as agreed so far
 
-**Core (required) layer — a CLI-driven, graph-based Agentic Control Plane.**
-An MCP server is the "brain": a swappable knowledge pack (e.g. .NET Framework -> .NET Core migration rules, or arbitrary future domains) exposed as skills. One skill runs an audit and emits a structured audit file. A terminal-based control plane ingests that audit file and dynamically builds a phase graph from it, or falls back to a generic stock migration plan if no audit exists. The graph is nodes + documentation-only edges, backed by a local per-run state store (run id, checkpoints, protected-path baseline).
+*(Amended 2026-09-18 by the rightsizing pass. Where an earlier statement was overclaimed, the correction is inline rather than a quiet deletion — same convention `research/G` uses.)*
 
-Agents:
-- **Coordinator** – walks the graph, dispatches work, never edits code itself.
+**Core (required) layer — a CLI-driven, graph-based Agentic Control Plane.**
+A swappable knowledge pack is the "brain" (e.g. .NET Framework -> .NET Core migration rules, or arbitrary future domains): it runs an audit and emits a structured audit file, and supplies parameterized node templates. ~~An MCP server~~ — **corrected: for v1 the pack is a local versioned directory plus a CLI, not an MCP server; see `FRD.md` `KNOWLEDGE-1` for why MCP is now v2 and what would promote it.** A terminal-based control plane ingests that audit file and builds a phase graph from it, or executes an operator-authored plan file directly (which is also the vertical-slice path). The graph is nodes + documentation-only edges, backed by a per-run JSONL event log committed into the run branch.
+
+Agents — **roles, not security boundaries** (`FRD.md` §3.2):
+- **Coordinator** – walks the graph, dispatches work, is given no file-write tools.
 - **Implementation agent(s)** – make the actual code/config changes, one phase at a time.
-- **QA/verification agent** – proves things live (real build, real test run, granular itemized pass/fail per check) – never trusts a self-reported "it works."
+- **QA/verification agent** – runs real builds and real tests, itemized per check. **The control plane, not the model, derives the verdict** — exit codes and TRX/JUnit/SARIF only (`QA-2`). A model may explain a failure; it may never author one.
 
 Guardrails:
-- File-hash/git baseline of the repo before any writes; audited against that baseline after.
-- Exactly one consolidated human approval gate before the unattended run begins.
-- Structured stop/friction-report path (fixed taxonomy, bounded retries).
+- **Dedicated run branch** off a captured baseline commit; nothing is ever written to a pre-existing branch, and nothing is pushed (`INTEGRITY-9`).
+- Commit per phase; `git diff` against the phase's declared scope after each one; fail closed (`INTEGRITY-3`). ~~File-hash baseline of the whole tree~~ — **corrected: git is the mechanism; whole-tree hashing was rejected as duplication (`research/G`), and the narrow gitignored-path carve-out is deferred to v2.**
+- ~~Exactly one consolidated human approval gate~~ — **corrected: one gate *before the first write*, and no scheduled interruption after it.** "Exactly one" was a product claim dressed as a safety property: escalations mean there will be many human interactions, just unplanned ones (`APPROVAL-1`). The gate is accept-all-or-abort; partial approval is "edit the plan file and re-run" (`APPROVAL-5`).
+- Check sets are frozen at the gate, and every verdict is a **delta against baseline check results** captured before the gate — legacy repos do not build clean (`QA-5`).
+- Structured stop/friction-report path (fixed taxonomy, bounded retries, hard wall-clock and token budgets).
+- A **verbose local diagnostic log**, never exported, is what makes any of the above debuggable (`DIAG-1`).
 - This layer must work fully headless — it is the enforceable core, not optional.
 
-**Optional layer — OpenBot (https://github.com/CopilotKit/OpenBot) as the chat/UI front end.**
-The standalone process executes its own tools directly and has its own CLI-based approval gate by default; when OpenBot is attached, that same approval step can *additionally* render as an OpenBot card.
+**Optional layer — OpenBot (https://github.com/CopilotKit/OpenBot) as the chat/UI front end. Now v2** (`UIATTACH-*`). The standalone process executes its own tools directly and has its own CLI approval gate; if OpenBot is ever attached, that same approval step can *additionally* render as a card.
 
-**Two goals added explicitly:**
-1. **Analytics/usage instrumentation.** The control plane must know when to fire tracked events (phase start/end, gate approved, etc.).
-2. **Provider-agnostic LLM backend.** Swappable by config across Azure AI Foundry, Google Vertex, Anthropic, and OpenAI.
+**Two goals added earlier, both now deferred with reasons** (not abandoned):
+1. **Analytics/usage instrumentation** → `FRD.md` `TELEMETRY-*` is v2: zero consumers today, and `EXEC-6`'s committed event log plus `DIAG-1` are strictly more useful now. Promote when a real consumer exists.
+2. **Provider-agnostic LLM backend** → `PROVIDER-1/2` are v2 and were dropped from the acceptance criteria. Transport-level swapping is a commodity; *behavioral* portability (tool-calling reliability, scope compliance) is the hard part and is untested. Ship on one model; keep the one-interface seam because it costs nothing.
 
 ## Constraints on how this project itself gets worked on
 - **Usage-conscious:** research runs single-stream, not parallelized across subagents.
 - **Document everything, continuously:** Update `CLAUDE.md`, `research/`, and `logs/session-log.md` constantly.
-- Nothing gets built yet. Current phase is research / specification only.
+- **The specification phase is over.** As of 2026-09-18 the next work is code — `IMPLEMENTATION-PLAN.md` Phase A. Adding requirements to `FRD.md` before Phase A has run is the failure mode this project has already demonstrated once (a 14-item gap analysis converted to 14 requirement families at a 100% conversion rate, in one sitting, with nothing dispositioned as "won't do" or "needs a spike first"). **New requirements should be earned by evidence from a run, not derived from a checklist.**
 
 ## Architecture decisions log
 - **2026-09-17** – Core harness is CLI-driven and graph-based. OpenBot adopted as optional UI.
@@ -64,8 +70,10 @@ The standalone process executes its own tools directly and has its own CLI-based
 - **2026-09-18** – `FRD.md` created as primary spec.
 - **2026-09-18** – **PIVOT:** Redefined the system as a generalized "Agentic Control Plane." Decoupled the .NET domain logic into a "reference implementation knowledge pack." The core system is now explicitly domain-agnostic.
 - **2026-09-18** – **Enterprise SDLC hardening.** User issued "Principal Engineering Directives" (contract-driven interfaces, dependency inversion, event sourcing, bounded autonomy, ephemeral sandboxing, fail-closed integrity, zero-trust credentialing, proof-over-prose verification, hermetic LLM testing, schema-validated telemetry). Gap analysis against `FRD.md` found 14 real gaps (schema versioning, storage/telemetry dependency inversion, event sourcing, crash resumption, sandbox isolation, prompt-level secret redaction, knowledge-pack supply chain, hermetic testing, telemetry schema validation, control-plane's own code quality, cost/time budgets, event-log tamper evidence, non-git side-effect handling, requirement→test→telemetry traceability). All 14 resolved into new/amended FRD requirement IDs: `AUDIT-6`, `KNOWLEDGE-4`, `EXEC-6/7/8`, `INTEGRITY-6/7/8`, `PROVIDER-3`, `TELEMETRY-4/5`, `ENV-3/4`, and new families `STORAGE-*` (§4.13), `PROMPT-*` (§4.14), `TEST-*` (§4.15), `BUDGET-*` (§4.16), `PROCESS-*` (§4.17), plus a new `§9 Traceability` mechanism. **Explicit caveat added to FRD §1**: this governs process integrity, not code correctness — no set of requirements gives "100% certainty" of enterprise-grade output; human review of generated code remains load-bearing.
+- **2026-09-18** – **RIGHTSIZING.** An independent staff-engineer design review of the hardening pass above was accepted in full and implemented. `FRD.md` rewritten: every requirement tagged **[v1] / [v2] / [won't-do]**, **28 v1 IDs** (from 63 untagged `SHALL`s), ~18 duplicate IDs merged. **Cut as won't-do, with reasons recorded in place so they stay cut**: `INTEGRITY-7` (hash-chained log — wrong adversary; git objects already provide it, so `EXEC-6` commits the log into the run branch instead), `STORAGE-1/2` (pluggable backends for a single-user CLI — decided: JSONL + run branch), `KNOWLEDGE-4`'s allowlist/signing half (supply-chain model for an ecosystem of one pack, one author — the content-hash half survives in `EXEC-6`), `TELEMETRY-4/5` (made the system undebuggable), `PROMPT-1/2` (outbound secret masking — an unsubstantiable compliance claim that also corrupts implementer input), `PROVIDER-3`. **Demoted to v2 with named promotion triggers**: `PROVIDER-1/2` (and removed from acceptance — the two-provider criterion was vacuous), `ENV-3/4` (**with the .NET Framework / Linux-container contradiction written in place so it isn't silently re-promoted**), `TELEMETRY-1/2/3`, `UIATTACH-*`, `KNOWLEDGE-1/2/3`, `PLAN-2`, `AUDIT-4/6`, `INTEGRITY-4`, `TEST-3/4`. **Added, because they were missing and load-bearing**: `QA-2` (deterministic verdict derivation from exit codes + machine-readable test output; check set frozen at the gate), `QA-5` (delta-vs-baseline evaluation), `INTEGRITY-9` (dedicated run branch + abandon path), `APPROVAL-5` (rejection path — accept-all-or-abort; this also resolves the dangling `APPROVAL-5` reference that had been in this file with no requirement behind it), `DIAG-1` (local verbose diagnostic log, outside the telemetry pipeline), `SECRET-1` (pre-run scan + forced operator acknowledgment), `DISCLOSE-1` (third-party data-disclosure policy), `EXEC-2`/`EXEC-10` (honest role statement + the v2 mechanism that would make it a boundary), `INTEGRITY-8`'s compensating-action follow-through (the `package-manager-mutating` manual path is the *common* case in the reference domain, now first-class), `§5` threat model, `§7` out-of-scope (cross-referenced since the first version, never written until now), `§10` known open issues, `§11` revision note. `§9`'s CI traceability gate rescoped to **v1-tagged IDs only** (it was unsatisfiable-by-construction otherwise) with requirement→rationale linkage restored inline. `IMPLEMENTATION-PLAN.md` re-sequenced A–F with a **no-LLM vertical slice as Phase A**, ahead of everything. **Standing conclusion: the specification phase is over; the next artifact is code.**
 
 ## Key references
-- `FRD.md` (this repo) – **the primary spec.** Tool-agnostic, domain-agnostic functional requirements.
-- `IMPLEMENTATION-PLAN.md` (this repo) – one candidate realization of the FRD.
+- `FRD.md` (this repo) – **the primary spec.** Tool-agnostic functional requirements, each tagged **[v1] / [v2] / [won't-do]**. §5 threat model, §7 out of scope, §8 spikes to run, §9 traceability, §10 known open issues, §11 what the rightsizing cut and why.
+- `IMPLEMENTATION-PLAN.md` (this repo) – one candidate realization of the FRD. **Phases A–F; Phase A is the no-LLM vertical slice and is next.**
+- `research/G-trust-layer-reconciliation.md` – the strongest engineering artifact in the repo, and the origin of the git-native integrity design (`INTEGRITY-1/2/3/9`) and of the "there is a seam by construction" admission that `EXEC-2` now states honestly.
 - `COPILOTKIT-ONBOARDING-JOURNAL.md` (this repo) – the reference pattern for the CLI/graph execution.
