@@ -1,0 +1,34 @@
+{
+  "_comment": "Mock pre-upgrade technical audit. Hand-authored narrative flavor for the Phase A vertical slice, not produced by a real analyzer — FRD PLAN-1 path (b) executes from an operator-authored plan file directly and does not consume this. It exists to make the sample repo read as a plausible pre-upgrade target, not as an input the control plane parses in Phase A.",
+  "schemaVersion": "0.0-mock",
+  "targetFramework": {
+    "current": "net8.0 (stand-in for a real .NET Framework 4.x target)",
+    "recommended": "net8.0"
+  },
+  "findings": [
+    {
+      "id": "FIND-001",
+      "category": "reliability",
+      "severity": "medium",
+      "path": "src/SampleApp/Calculator.cs",
+      "description": "Divide(a, b) does not guard against b == 0; silently returns Infinity instead of failing loudly.",
+      "remediationTag": "add-divide-by-zero-guard"
+    },
+    {
+      "id": "FIND-002",
+      "category": "api-surface",
+      "severity": "low",
+      "path": "src/SampleApp/Calculator.cs",
+      "description": "Calculator exposes Add/Subtract/Divide but not Multiply, which callers currently work around externally.",
+      "remediationTag": "add-multiply-operation"
+    },
+    {
+      "id": "FIND-003",
+      "category": "secrets",
+      "severity": "high",
+      "path": "src/SampleApp/appsettings.json",
+      "description": "Plaintext database password committed in a connection string. Flagged for operator acknowledgment by SECRET-1, not auto-remediated by this run.",
+      "remediationTag": null
+    }
+  ]
+}

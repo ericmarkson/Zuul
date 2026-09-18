@@ -734,3 +734,86 @@ identified — answering a request with more artifacts instead of with a running
 build `IMPLEMENTATION-PLAN.md` Phase A. The single most useful line in the review, kept
 verbatim because it is the whole instruction: *"The fastest route back to the former is a
 build directory."*
+
+
+---
+
+### 2026-09-18 — Phase A built and passing: the first code in the project
+
+Continuation of the same session that rightsized `FRD.md`. User confirmed the rightsizing
+diff and said to commit it and move immediately to Phase A (the no-LLM vertical slice).
+
+Before writing code, the plan's own blocking decision (a target repo for the vertical slice)
+was raised via `AskUserQuestion`. The user clarified the framing rather than answering
+directly: the .NET domain content is auxiliary to this project — the actual deliverable is
+the domain-agnostic governance spine, and a synthetic stand-in app plus a mock pre-upgrade
+audit is sufficient and appropriate for that. The user separately named a real, full-blown
+sample app — `C:\Code\_sandbox\Opti11\alloy-mvc-template` — as the eventual stretch-goal
+target, explicitly deferred until the .NET knowledge pack (Phase C) exists to supply the
+product/domain knowledge that repo would require. This is recorded in `CLAUDE.md`'s Next
+Action and should not be treated as ready to use until Phase C exists.
+
+**What was built**, all under version control for the first time in this project:
+- `fixtures/sample-dotnet-app/` — a small synthetic net8.0 solution (SampleApp class library +
+  a hand-rolled, dependency-free test runner emitting JUnit XML — no test framework, no NuGet
+  packages beyond the SDK itself, so the whole thing builds and runs fully offline). Contains
+  one deliberate pre-existing bug (`Divide` doesn't guard against zero) so the baseline check
+  run has a genuine pre-existing failure to prove `QA-5`'s delta logic against, and one
+  deliberately planted secret (a connection-string password in `appsettings.json`) to prove
+  `SECRET-1`'s forced-acknowledgment flow. `audit.json` is a hand-authored mock pre-upgrade
+  audit, present for narrative completeness — Phase A's operator-authored plan path does not
+  parse it programmatically; that's the audit-derived path, Phase D territory.
+- `fixtures/sample-dotnet-app-edits/` — the scripted "implementer"'s literal full-file
+  replacements for three phases, checked in as plain files rather than generated at runtime.
+- `plans/sample-plan.json` — the hand-written plan (Task 1 input). Three phases: two legitimate
+  (guard the divide-by-zero bug; add a Multiply method + test), and a third that deliberately
+  edits a file outside its declared scope, on purpose, to exercise `INTEGRITY-3`.
+- `controlplane/` — the governance-spine package: `plan.py`, `gitops.py`, `checks.py`,
+  `secrets_scan.py`, `eventlog.py`, `escalate.py`, `gate.py`, `runner.py`, `cli.py`, plus
+  `controlplane/tests/` (11 hermetic `unittest`-based tests, zero external dependencies —
+  deliberately stdlib-only rather than pulling in pytest, to keep `TEST-1` genuinely
+  zero-setup). Every module's docstring cites the exact FRD requirement ID(s) it implements.
+
+**What actually got exercised, live, against real `git` and `dotnet` processes** (not
+simulated): `INTEGRITY-1` (baseline capture; a unit test also proves dirty-tree refusal
+preserves the uncommitted work rather than discarding it), `INTEGRITY-9` (dedicated run
+branch; a unit test proves a pre-existing branch's tip is untouched), `PLAN-1` (the plan
+commit contains only control-plane artifacts under `.installgraph/`, is the branch's first
+commit), `QA-5` (the baseline run's one pre-existing failure did not block the run; later
+phases are evaluated as deltas), `SECRET-1` + `DISCLOSE-1` (both rendered at the gate; the
+planted secret required explicit acknowledgment before the approval prompt was even shown),
+`APPROVAL-5` (both rejection paths — declining the secret acknowledgment, and declining the
+final approval — tested live: target repo restored to baseline byte-for-byte, run branch
+deleted since it held only the plan commit, process exits 1), `INTEGRITY-2` (`git log` on the
+run branch shows exactly one `phase:` commit per phase), `INTEGRITY-3` + `ESCALATE-1/2`
+(phase 3's deliberate violation was caught, the run halted, the branch was left fully intact
+with all prior phase commits preserved, and the escalation report named the branch, baseline,
+taxonomy code `scope-conflict`, and a pointer to the diagnostic log), `EXEC-6` (event log
+committed at the plan commit and after each `PHASE_COMMITTED`; fixed event-type enum used
+throughout).
+
+**One real bug found and fixed while building this**: the first cut of `checks.py` derived
+pass/fail only from the parsed result artifact, not from the process exit code directly — so
+a check whose artifact falsely claimed success while the process exited non-zero would have
+been recorded as a pass. That is precisely the failure mode `QA-2` exists to prevent, and it
+would have shipped if Phase A hadn't been built. Fixed so the exit code governs whenever the
+artifact doesn't already reflect a failure, and `controlplane/tests/test_checks_determinism.py`
+now asserts this directly, including that exact lying-artifact case.
+
+**Deliberately not built in this pass** (outside Phase A's declared v1 coverage): `BUDGET-1/2`
+(no LLM yet to burn a budget), `EXEC-7` (crash/resume — no long-running process yet to crash),
+`INTEGRITY-8`'s compensating-action path (needs a `package-manager-mutating` phase, which is
+real-domain territory, i.e. Phase C), and §9's `traceability.yaml` as an enforced CI gate
+(every v1 ID Phase A touches now has a demonstrated behavior or a unit test, but nothing
+machine-checks that mapping yet).
+
+**State after this entry**: `git status` is clean; `CLAUDE.md`, `FRD.md`, `IMPLEMENTATION-PLAN.md`,
+`logs/session-log.md` are committed at `bfc5ad0`, and `fixtures/`, `plans/`, `controlplane/`
+are staged for a follow-up commit. `python -m unittest discover -s controlplane/tests` passes
+11/11. `python -m controlplane.cli run --yes` runs end-to-end to the intentional phase-3
+escalation; both rejection paths were exercised manually via piped stdin.
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (especially §5, §8, §10, §11),
+then run `python -m controlplane.cli run --yes` from the repo root to see Phase A execute,
+then pick up at `CLAUDE.md`'s "Next action" — Phase B spikes or Phase C, per the user's own
+call once this entry is reviewed.

@@ -1,0 +1,44 @@
+{
+  "schema_version": "0.1",
+  "run_id_prefix": "sample-dotnet-app",
+  "plan_description": "Phase A vertical slice: three hand-written phases against fixtures/sample-dotnet-app, informed by the mock audit at fixtures/sample-dotnet-app/audit.json (FIND-001, FIND-002). No LLM is involved; every edit is a scripted full-file replacement checked into fixtures/sample-dotnet-app-edits/. Phase 3 deliberately touches a file outside its declared scope to exercise INTEGRITY-3's fail-closed scope enforcement.",
+  "check_set": [
+    {
+      "id": "unit-tests",
+      "command": ["dotnet", "run", "--project", "tests/SampleApp.Tests/SampleApp.Tests.csproj", "--", "--result", "{result_artifact}"],
+      "result_artifact": "{run_dir}/results/{phase_id}/results.xml",
+      "result_format": "junit"
+    }
+  ],
+  "phases": [
+    {
+      "id": "phase-1-guard-divide-by-zero",
+      "description": "Add a guard clause so Divide throws ArgumentException on a zero divisor instead of silently returning Infinity (audit finding FIND-001).",
+      "declared_scope": ["src/SampleApp/Calculator.cs"],
+      "side_effect_class": "file-only",
+      "edits": [
+        {"path": "src/SampleApp/Calculator.cs", "content_file": "phase-1-calculator.cs"}
+      ]
+    },
+    {
+      "id": "phase-2-add-multiply",
+      "description": "Add Calculator.Multiply and its test coverage (audit finding FIND-002).",
+      "declared_scope": ["src/SampleApp/Calculator.cs", "tests/SampleApp.Tests/Program.cs"],
+      "side_effect_class": "file-only",
+      "edits": [
+        {"path": "src/SampleApp/Calculator.cs", "content_file": "phase-2-calculator.cs"},
+        {"path": "tests/SampleApp.Tests/Program.cs", "content_file": "phase-2-program.cs"}
+      ]
+    },
+    {
+      "id": "phase-3-rename-subtract-to-sub",
+      "description": "Rename Calculator.Subtract to Calculator.Sub for naming consistency. DELIBERATE VIOLATION: this phase's scripted edit also touches the test runner to keep the build green, but the test runner is not in this phase's declared_scope. This is here on purpose, to exercise INTEGRITY-3 (post-phase scope diff, fail closed) rather than to demonstrate a real remediation.",
+      "declared_scope": ["src/SampleApp/Calculator.cs"],
+      "side_effect_class": "file-only",
+      "edits": [
+        {"path": "src/SampleApp/Calculator.cs", "content_file": "phase-3-calculator.cs"},
+        {"path": "tests/SampleApp.Tests/Program.cs", "content_file": "phase-3-program.cs"}
+      ]
+    }
+  ]
+}
