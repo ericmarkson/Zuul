@@ -817,3 +817,70 @@ escalation; both rejection paths were exercised manually via piped stdin.
 then run `python -m controlplane.cli run --yes` from the repo root to see Phase A execute,
 then pick up at `CLAUDE.md`'s "Next action" — Phase B spikes or Phase C, per the user's own
 call once this entry is reviewed.
+
+
+---
+
+### 2026-09-18 — ENV-3 resolved before Phase B started, without the spike it called for
+
+Same session, immediately after Phase A shipped. User raised a correction before Phase B
+began: the reason build/verify was always meant to run in a terminal rather than a sandbox
+is specifically to use the real MSBuild already installed on the operator's machine. The
+user also confirmed Windows containers are a hard no-go, but asked to still look for a way
+to use a Linux container "if it comes down to it" — framed as: don't necessarily block on
+containerizing the build step, but don't give up on containers entirely either.
+
+Per the user's explicit instruction not to start Phase B until this was thought through,
+investigated rather than assumed: read the actual `.csproj` at the stretch-goal target
+(`C:\Code\_sandbox\Opti11\alloy-mvc-template`). Confirmed genuine legacy-format MSBuild —
+`ToolsVersion="4.0"`, the pre-SDK 2003 MSBuild XML namespace, `TargetFrameworkVersion v4.6.1`,
+MVC project-type GUIDs, `packages.config`, and heavy `System.Web.*` references (`System.Web.Mvc`,
+`System.Web.Abstractions`, IIS Express settings). This is a real ASP.NET MVC app on the classic
+System.Web/IIS pipeline, not something `dotnet build` or Mono's MSBuild can reliably reproduce —
+it needs actual `MSBuild.exe`.
+
+Before finishing that read, the user interjected with one more fact that reframed the whole
+question: even the *migrated* .NET Core side of this org's real deployment pipeline builds
+locally and only containerizes the already-built output (COPY into a runtime image), never
+compiles inside the container. That is the actual build pattern on both sides of the
+migration, not a legacy-only workaround.
+
+Presented reasoning (not yet code) before touching anything, per the user's instruction:
+`ENV-3` as originally written bundled two different concerns — sandboxing the implementer
+(file edits, git ops, no toolchain needed) and sandboxing the verifier (needs the real
+toolchain, wherever it lives). These have different answers now. Proposed splitting `ENV-3`
+into a won't-do (verifier/build, this domain) and a new `ENV-5` (implementer-only, still a
+live v2 candidate, no toolchain blocker). Also proposed elevating `EXEC-10` (worktree-based
+verifier separation) as the cheaper near-term mechanism, since it doesn't depend on either
+half of the ENV-3 split landing first. Asked one direct question: did the user want an actual
+empirical Mono-in-Linux-container test for hard evidence, or was the reasoning above enough
+to document as won't-do and move on. **User's answer: "defer it, lets not spend the time
+now."** The empirical spike was not run — this is a reasoned, evidence-informed decision
+grounded in the confirmed `.csproj` contents and the user's own account of the org's real
+build pattern, not a code-verified one. If harder evidence is ever wanted, the spike is still
+available and explicitly flagged as such everywhere this decision is recorded.
+
+**What changed, all documentation, no code**:
+- `FRD.md`: `ENV-3` rewritten to won't-do (build/verify sandboxing, this domain only — the
+  disposition is explicitly scoped per-domain, not a blanket claim). New `ENV-5` added
+  (implementer-only Linux-container sandboxing, v2, unblocked). `ENV-4` reworded to depend on
+  `ENV-5` instead of the now-retired `ENV-3` boundary. `EXEC-10`'s note amended to flag it as
+  the nearer-term mechanism. §8 item 1 marked resolved with a struck-through original and a
+  replacement spike (stand up a plain Linux container for `ENV-5`, no toolchain). New §12
+  revision note appended recording the full resolution and explicitly noting the empirical
+  test was deferred by the operator's own call, not answered by code.
+- `IMPLEMENTATION-PLAN.md`: Phase B's B1 replaced (spike `ENV-5`, not the retired Windows-
+  container question); B3 (the worktree spike) elevated to go first since it's unblocked by
+  either half of the ENV-3 split. The "Sandboxed execution environments — was Phase 7" deferred
+  note updated to stop pointing at an unrun spike as if it were still pending.
+- `CLAUDE.md`: two new decision-log entries (Phase A built; ENV-3 resolved), "Next action"
+  and headline findings updated to match, in correct chronological order relative to the
+  existing rightsizing entry.
+
+**State after this entry**: still nothing new in `.scratch/` from this exchange — no code was
+run. `FRD.md`, `IMPLEMENTATION-PLAN.md`, `CLAUDE.md`, and this file are modified and awaiting
+commit as of this entry.
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (especially §5, §8, §10, §11, and
+the new §12), then Phase B in its reframed order — B3 (worktree) first, B1/`ENV-5` (Linux
+container implementer isolation) second, B2 (private feeds) third — or start Phase C.

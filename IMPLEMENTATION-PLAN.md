@@ -51,19 +51,32 @@ Covers FRD v1: `PLAN-1` (operator-authored plan path), `PLAN-5`, `INTEGRITY-1`, 
   probably 30 lines), 3 (baseline reality), and §10.1 (git hooks — find out immediately whether
   a `pre-commit` hook trips `INTEGRITY-3`).
 
-## Phase B — Spikes that unblock deferred requirements — **parallel with A**
-**Goal**: answer the three questions the FRD currently documents as contradictions rather than
+## Phase B — Spikes that unblock deferred requirements
+**Goal**: answer the questions the FRD currently documents as contradictions rather than
 resolving.
 
-- **B1**: Run a real .NET Framework baseline build inside a Windows container on the target host.
-  Time it, measure the image size, note whether Hyper-V isolation is required. **This decides
-  whether FRD `ENV-3` is ever promotable or becomes a permanent won't-do for this domain.**
+**⚠ B1 changed on 2026-09-18, after Phase A shipped, before this phase started.** The original
+B1 (build .NET Framework inside a Windows container) is retired without being run: the operator
+ruled out Windows containers directly, and confirmed that build/verify execution is meant to use
+the real MSBuild already installed on the operator's machine — which even the migrated .NET Core
+side of this org's real workflow does too (build locally, containerize only the finished output).
+A quick read of the stretch-goal target's actual `.csproj` confirmed it is genuine legacy-format
+MSBuild, which only real `MSBuild.exe` can build. FRD `ENV-3` is now **won't-do for this domain's
+build/verify step**, documented in place; see `FRD.md` §12 for the full resolution and the new
+`ENV-5` (implementer-only sandboxing, no toolchain blocker). The Mono/Linux-hosted-MSBuild
+question was deliberately not spiked — deferred by the operator's own call, not answered by code.
+
+- **B1 (reframed)**: spike `ENV-5` instead — stand up a plain Linux container (no .NET toolchain
+  at all) that can check out the run branch, apply a scripted edit, and commit. This is a much
+  easier spike than the one it replaces, since it was never blocked by MSBuild.
 - **B2**: Restore from an authenticated private feed (Azure Artifacts / Artifactory) and
   determine what the control plane must do with `NuGet.config` credentials. (FRD `ENV-4`, §10.6.)
-- **B3**: Second `git worktree` as a read-only verifier view (FRD `EXEC-10`). If cheap, it
-  promotes to v1 early.
-- **Exit criteria**: three short written answers appended to `logs/session-log.md`, each either
-  promoting a v2 requirement, confirming its deferral, or converting it to won't-do.
+  Unaffected by B1's change — package restore happens during the unsandboxed host build either way.
+- **B3 (elevated — do this one first)**: Second `git worktree` as a read-only verifier view (FRD
+  `EXEC-10`). With build/verify staying host-executed by design, this is now the cheapest real
+  implementer/verifier separation available, and doesn't depend on B1 landing first.
+- **Exit criteria**: written answers appended to `logs/session-log.md` for B1(reframed), B2, and
+  B3, each either promoting a v2 requirement, confirming its deferral, or converting it to won't-do.
 
 ## Phase C — Reference knowledge pack (.NET) — *was Phase 1*
 **Goal**: the first domain-specific knowledge source: an audit that emits an `AUDIT-1`-compliant
@@ -129,10 +142,13 @@ Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `EXEC-7`, `BUDGET-1`, `BUDGET-2`, `
   acceptance criteria. Ship on one model; keep the interface seam because it costs nothing.
 - **Exported telemetry** (was Phase 5): FRD `TELEMETRY-*` is v2 — zero consumers today, and
   `EXEC-6`'s committed event log plus `DIAG-1`'s local diagnostic log are strictly more useful.
-- **Sandboxed execution environments** (was Phase 7): FRD `ENV-3/4` are v2 **and contradict the
-  reference domain** — Linux containers cannot run legacy .NET Framework MSBuild, so the
-  pre-change baseline build (`QA-5`) cannot run in the sandbox `ENV-3` would mandate. Phase B1
-  is the spike that decides this. Do not re-promote without B1's answer in hand.
+- **Sandboxed build/verify execution** (was Phase 7): FRD `ENV-3` is **won't-do for this domain**,
+  resolved 2026-09-18 without B1's original spike — the reference domain's real toolchain
+  (`MSBuild.exe`) is Windows-only, Windows containers were ruled out directly by the operator, and
+  even the migrated .NET Core side of this org's workflow builds on the host and only
+  containerizes the output afterward. Do not re-promote for this domain without new evidence; see
+  `FRD.md` §12. Implementer-only sandboxing survives as **`ENV-5`**, unblocked by any of this —
+  that's what the reframed Phase B1 now spikes.
 
 ## Sequencing summary
 **A and B run in parallel and come first.** C needs a target repo (same decision as A). D needs C
