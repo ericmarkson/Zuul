@@ -32,6 +32,7 @@ class Runner:
         self.run_id = f"{self.plan.run_id_prefix}-{uuid.uuid4().hex[:8]}"
         self.run_dir = scratch_root / "runs" / self.run_id
         self.target_repo = self.run_dir / "target"
+        self.verifier_repo = self.run_dir / "verifier"
         self.event_log = EventLog(self.run_dir / "events.jsonl")
         self.diag_log = DiagnosticLog(self.run_dir / "diagnostics.log")
 
@@ -63,6 +64,13 @@ class Runner:
     # ---- check set ---------------------------------------------------------------
 
     def _run_check_set(self, phase_id: str) -> list[CheckResult]:
+        """EXEC-10: checks never run in the implementer's own working directory. Before each
+        check set, the verifier's independent worktree is moved (detached) to whatever commit
+        the implementer last produced, and every check command executes there instead."""
+        verify_commit = gitops.head(self.target_repo)
+        gitops.checkout(self.verifier_repo, verify_commit)
+        self.diag_log.write(f"phase={phase_id} verifier worktree checked out at {verify_commit}")
+
         results = []
         for check in self.plan.check_set:
             artifact = Path(check.result_artifact.format(run_dir=str(self.run_dir), phase_id=phase_id))
@@ -71,7 +79,7 @@ class Runner:
                 for part in check.command
             ]
             self.diag_log.write(f"phase={phase_id} check={check.id} command={command}")
-            result = run_check(self.target_repo, check.id, command, artifact, check.result_format)
+            result = run_check(self.verifier_repo, check.id, command, artifact, check.result_format)
             self.diag_log.write(
                 f"phase={phase_id} check={check.id} exit={result.exit_code} "
                 f"not_run={result.not_run_reason} outcomes={result.test_outcomes}"
@@ -138,12 +146,24 @@ class Runner:
         self.diag_log.write(f"run_id={self.run_id} starting, plan={self.plan.source_path}")
         self.event_log.append(EventType.RUN_STARTED, run_id=self.run_id, plan_hash=self.plan.content_hash)
 
-        # Task 2: baseline + refuse dirty tree + run branch
+        # Task 2: baseline + refuse dirty tree
         self._materialize_target()
         self.baseline_sha = gitops.capture_baseline(self.target_repo)
         self.event_log.append(EventType.BASELINE_CAPTURED, sha=self.baseline_sha)
 
-        # Task 3: baseline checks BEFORE the gate (QA-5)
+        # EXEC-10: the verifier's independent worktree, set up once baseline exists. Detached,
+        # so it never collides with whatever branch the implementer's own working directory has
+        # checked out.
+        gitops.add_worktree(self.target_repo, self.verifier_repo, self.baseline_sha)
+        self.diag_log.write(f"verifier worktree created at {self.verifier_repo}")
+
+        try:
+            return self._run_after_worktree_setup()
+        finally:
+            gitops.remove_worktree(self.target_repo, self.verifier_repo)
+
+    def _run_after_worktree_setup(self) -> bool:
+        # Task 3: baseline checks BEFORE the gate (QA-5), executed in the verifier's worktree
         baseline_results = self._run_check_set("baseline")
         baseline_by_check = {r.check_id: r for r in baseline_results}
 

@@ -884,3 +884,73 @@ commit as of this entry.
 **To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (especially §5, §8, §10, §11, and
 the new §12), then Phase B in its reframed order — B3 (worktree) first, B1/`ENV-5` (Linux
 container implementer isolation) second, B2 (private feeds) third — or start Phase C.
+
+
+---
+
+### 2026-09-19 — Phase B, B3: verifier isolation via a second git worktree, EXEC-10 promoted to v1
+
+New day, same project. User said "continue" after the prior session's ENV-3 resolution, which
+had left Phase B reframed with B3 (worktree-based verifier separation) recommended to go first
+since it's unblocked by either half of the ENV-3 split.
+
+**What was built**: `controlplane/gitops.py` gained `add_worktree`/`remove_worktree`, thin
+wrappers around `git worktree add --detach` / `git worktree remove --force`. `runner.py` was
+restructured: `Runner.run()` now creates the verifier worktree right after baseline capture
+and tears it down in a `finally` block regardless of exit path (success, escalation, or
+rejection); `_run_check_set` checks the verifier worktree out to whatever commit the
+implementer's working directory currently has at `HEAD`, then runs every check command with
+that worktree as `cwd` instead of the implementer's own directory. This applies uniformly to
+the baseline check run and every phase's check run — no special-casing needed, since "sync to
+HEAD, then check" is the same operation every time.
+
+Critically, the worktree is checked out **detached, by raw commit SHA**, never by branch name.
+This was a specific design choice, not an oversight: git refuses to have the same branch
+checked out in two worktrees at once, but a detached checkout of an arbitrary commit coexists
+fine with a branch checkout elsewhere. This matters because the implementer's working directory
+has the run branch checked out (`INTEGRITY-9`) — if the verifier worktree tried to check out
+that same branch, the two would collide.
+
+Added `controlplane/tests/test_verifier_worktree.py` (4 new tests, 15 total now) proving the
+actual guarantee rather than just that the pipeline still runs: an uncommitted implementer edit
+is invisible from the verifier's worktree; the verifier worktree advances only on an explicit
+checkout, never implicitly; and deleting the run branch (APPROVAL-5's rejection path) never
+conflicts with a detached verifier checkout even though both reference the same underlying
+`.git` store.
+
+**Verification**: 15/15 hermetic tests pass. A full live run (`python -m controlplane.cli run
+--yes`) reproduces the exact same happy-path-then-escalation behavior as before this change,
+with `diagnostics.log` now showing the verifier worktree created once and re-checked-out at
+baseline, phase-1, and phase-2 before the phase-3 scope violation halts the run. The rejection
+path was re-tested too (decline at final approval) — branch still deleted cleanly, no worktree
+conflict, confirming the `_reject` codepath and the new worktree teardown compose correctly.
+
+**Disposition**: `EXEC-10` promoted from v2 to v1. Not because the threat model changed — v1's
+adversary is still a confused model, not a malicious one, and INTEGRITY-3 already catches the
+failure after the fact — but because the actual cost (~15 lines) came in well under the ~30-line
+estimate `FRD.md` §8 item 2 had guessed at, and there was no reason left to defer something
+this cheap. This is the first "promoted because it turned out to be cheap" disposition in the
+project, distinct from every other v1/v2 call so far, which was about threat-model priority.
+
+**What changed, all cross-referenced to keep it consistent**:
+- `FRD.md`: `EXEC-10` retagged `[v1, promoted 2026-09-19]` with the promotion rationale inline;
+  §3.2 rewritten to state the verifier's real separation instead of describing it as a v2
+  aspiration; §8 item 2 marked resolved (struck through, like item 1 before it); a new
+  acceptance criterion 15 added for verifier isolation; the v1 index, count (28→29), and every
+  place that cited "28 v1 IDs" updated; a new §13 revision note recording the whole thing.
+- `IMPLEMENTATION-PLAN.md`: Phase B's B3 marked done with the implementation detail; B1
+  (`ENV-5` spike) and B2 (private feeds) remain open and unchanged.
+- `CLAUDE.md`: new decision-log entry, "Next action" updated (B3 removed from the open list),
+  the role-separation headline finding rewritten to reflect the verifier's real boundary.
+
+**State after this entry**: still nothing yet committed from this exchange as of this line;
+`git status` will show `FRD.md`, `IMPLEMENTATION-PLAN.md`, `CLAUDE.md`, `logs/session-log.md`,
+`controlplane/gitops.py`, `controlplane/runner.py`, and the new
+`controlplane/tests/test_verifier_worktree.py` modified/added. v1 requirement count is 29.
+Phase B is two-thirds open (B1, B2 remain).
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (§3.2, §8, §12, §13 especially),
+run `python -m unittest discover -s controlplane/tests` (expect 15/15) and
+`python -m controlplane.cli run --yes` to confirm current state, then pick up Phase B's
+remaining spikes (B1: `ENV-5` Linux-container implementer isolation; B2: private NuGet feeds)
+or start Phase C.

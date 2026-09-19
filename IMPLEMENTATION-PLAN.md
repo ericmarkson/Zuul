@@ -66,17 +66,25 @@ build/verify step**, documented in place; see `FRD.md` §12 for the full resolut
 `ENV-5` (implementer-only sandboxing, no toolchain blocker). The Mono/Linux-hosted-MSBuild
 question was deliberately not spiked — deferred by the operator's own call, not answered by code.
 
-- **B1 (reframed)**: spike `ENV-5` instead — stand up a plain Linux container (no .NET toolchain
+- **B3 — done, 2026-09-19. `EXEC-10` promoted to v1.** Second `git worktree`, checked out by raw
+  commit SHA (detached, never by branch name), gives the verifier a working directory the
+  implementer's process never touches. Implemented directly in `controlplane/gitops.py`
+  (`add_worktree`/`remove_worktree`) and `controlplane/runner.py` (`_run_check_set` now checks
+  the verifier worktree out to the implementer's latest commit before every check run, baseline
+  included) — ~15 lines, cheaper than the "probably 30 lines" estimate. Locked down by
+  `controlplane/tests/test_verifier_worktree.py`. Full re-verification: 15/15 hermetic tests
+  pass, live run reproduces the same happy-path-then-escalation behavior, worktree created once
+  and cleaned up on every exit path (success, escalation, rejection). See `FRD.md` §13.
+- **B1 (reframed)**: spike `ENV-5` — stand up a plain Linux container (no .NET toolchain
   at all) that can check out the run branch, apply a scripted edit, and commit. This is a much
-  easier spike than the one it replaces, since it was never blocked by MSBuild.
+  easier spike than the one it replaces, since it was never blocked by MSBuild. **Not yet done.**
 - **B2**: Restore from an authenticated private feed (Azure Artifacts / Artifactory) and
   determine what the control plane must do with `NuGet.config` credentials. (FRD `ENV-4`, §10.6.)
-  Unaffected by B1's change — package restore happens during the unsandboxed host build either way.
-- **B3 (elevated — do this one first)**: Second `git worktree` as a read-only verifier view (FRD
-  `EXEC-10`). With build/verify staying host-executed by design, this is now the cheapest real
-  implementer/verifier separation available, and doesn't depend on B1 landing first.
-- **Exit criteria**: written answers appended to `logs/session-log.md` for B1(reframed), B2, and
-  B3, each either promoting a v2 requirement, confirming its deferral, or converting it to won't-do.
+  Unaffected by B1's change — package restore happens during the unsandboxed host build either
+  way. **Not yet done.**
+- **Exit criteria**: written answers appended to `logs/session-log.md` for B1(reframed) and B2,
+  each either promoting a v2 requirement, confirming its deferral, or converting it to won't-do.
+  B3's answer is already recorded (promoted).
 
 ## Phase C — Reference knowledge pack (.NET) — *was Phase 1*
 **Goal**: the first domain-specific knowledge source: an audit that emits an `AUDIT-1`-compliant

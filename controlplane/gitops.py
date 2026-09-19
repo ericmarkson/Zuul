@@ -63,3 +63,14 @@ def checkout(repo: Path, ref: str) -> None:
 
 def delete_branch(repo: Path, branch: str) -> None:
     git(repo, "branch", "-D", branch)
+
+
+def add_worktree(repo: Path, worktree_path: Path, commit: str) -> None:
+    """EXEC-10: an independent checkout of a commit, in its own working directory, sharing the
+    same underlying .git store. Checked out detached (by raw commit, not by branch name) so it
+    never collides with whatever branch is checked out in the main working directory."""
+    git(repo, "worktree", "add", "--detach", "-q", str(worktree_path), commit)
+
+
+def remove_worktree(repo: Path, worktree_path: Path) -> None:
+    git(repo, "worktree", "remove", "--force", str(worktree_path), check=False)
