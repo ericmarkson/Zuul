@@ -50,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--max-tokens-per-run", type=int, default=100000, help="BUDGET-1")
     run_parser.add_argument("--wall-clock-per-phase-seconds", type=float, default=180, help="BUDGET-1")
     run_parser.add_argument("--wall-clock-per-run-seconds", type=float, default=1800, help="BUDGET-1")
+    run_parser.add_argument("--run-id", default=None, help="EXEC-7: reuse a run id to make this run addressable/resumable across process restarts. Omit for a fresh, always-new run.")
 
     gen_parser = subparsers.add_parser("generate-plan", help="generate a plan.json from a findings file (PLAN-1 path a)")
     gen_parser.add_argument("--findings", type=Path, required=True)
@@ -88,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             model_provider=model_provider,
             retry_budget=args.retry_budget,
             llm_max_output_tokens=args.llm_max_output_tokens,
+            run_id=args.run_id,
         )
         ok = runner.run()
         print(f"\nrun_id={runner.run_id}")

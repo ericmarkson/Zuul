@@ -22,6 +22,8 @@ from controlplane.gate import (
 from controlplane.llm_implementer import MalformedResponse, request_edits
 from controlplane.model_provider import BudgetedProvider, BudgetExceeded
 from controlplane.plan import Plan, load_plan
+from controlplane.resume import build_resume_report, is_incomplete, write_resume_report
+from controlplane.run_lock import RunLock, RunLockHeld
 from controlplane.secrets_scan import scan as scan_secrets
 
 
@@ -36,6 +38,7 @@ class Runner:
         model_provider: BudgetedProvider | None = None,
         retry_budget: int = 2,
         llm_max_output_tokens: int = 8000,
+        run_id: str | None = None,
     ):
         self.plan: Plan = load_plan(plan_path)
         self.fixture_template = fixture_template
@@ -44,7 +47,11 @@ class Runner:
         self.model_provider = model_provider
         self.retry_budget = retry_budget
         self.llm_max_output_tokens = llm_max_output_tokens
-        self.run_id = f"{self.plan.run_id_prefix}-{uuid.uuid4().hex[:8]}"
+        # EXEC-7: a caller-supplied run_id is what makes a run addressable across process
+        # restarts. Without one, every invocation is a fresh run by construction and the
+        # resume path below is simply never triggered -- which is correct, not a gap: nothing
+        # to resume into unless the operator names the same run twice.
+        self.run_id = run_id or f"{self.plan.run_id_prefix}-{uuid.uuid4().hex[:8]}"
         self.run_dir = scratch_root / "runs" / self.run_id
         self.target_repo = self.run_dir / "target"
         self.verifier_repo = self.run_dir / "verifier"
@@ -287,6 +294,43 @@ class Runner:
     # ---- top level -----------------------------------------------------------
 
     def run(self) -> bool:
+        # EXEC-7: exclusive lock keyed to run id, refuse a second process against the same run.
+        lock = RunLock(self.run_dir / "run.lock")
+        try:
+            lock.acquire()
+        except RunLockHeld as exc:
+            print(f"\n[REFUSED] {exc}")
+            return False
+
+        try:
+            return self._run_locked()
+        finally:
+            lock.release()
+
+    def _run_locked(self) -> bool:
+        # EXEC-7: on startup, a non-terminal prior event log halts with a resume report rather
+        # than auto-resuming or auto-resetting. This only ever triggers when the caller reuses
+        # a run_id explicitly -- a fresh UUID-based run_id (the default) never collides with
+        # anything, by construction.
+        if is_incomplete(self.event_log.path):
+            report = build_resume_report(self.run_id, self.event_log.path, self.target_repo)
+            report_path = self.run_dir / "resume_report.json"
+            write_resume_report(report_path, report)
+            self.diag_log.write(f"HALT: run_id={self.run_id} has incomplete prior state; refusing to auto-resume or reset")
+            print(f"\n[HALT] Run '{self.run_id}' has incomplete prior state and will not be auto-resumed or reset.")
+            print(f"  last event: {report.last_event.get('event_type', '(none)')}")
+            last_phase = report.last_committed_phase.get("phase_id") if report.last_committed_phase else "(none)"
+            print(f"  last committed phase: {last_phase}")
+            print(f"  run branch head: {report.run_branch_head}")
+            print(f"  target repo working tree dirty: {report.target_repo_dirty}")
+            print(f"  resume report: {report_path}")
+            print("  Resuming is an operator decision in v1 — inspect the report and the run branch, then decide.")
+            return False
+
+        if self.target_repo.exists():
+            print(f"\n[REFUSED] run_id '{self.run_id}' already has a completed run at {self.target_repo}. Choose a new run id.")
+            return False
+
         self.diag_log.write(f"run_id={self.run_id} starting, plan={self.plan.source_path}")
         self.event_log.append(EventType.RUN_STARTED, run_id=self.run_id, plan_hash=self.plan.content_hash)
 

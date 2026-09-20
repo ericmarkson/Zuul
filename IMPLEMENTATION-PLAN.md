@@ -160,13 +160,12 @@ generated plan's `_generated_from.dropped_informational_findings` field.
 - **Not built**: any actual remediation content. This was always Phase E's job, and the
   generator says so in every plan it produces (`plan_description` states this explicitly).
 
-## Phase E — Agentic implementer — *was Phase 4* — **mostly done, 2026-09-20**
+## Phase E — Agentic implementer — *was Phase 4* — **done, 2026-09-20**
 **Goal**: replace Phase A's scripted implementer with a model, and only that.
 
-Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`, `DISCLOSE-1`,
-`TEST-1`. **`EXEC-7` (crash/resume) was deliberately not built in this pass** — it's a distinct
-concern (surviving process death mid-run) from replacing the implementer, and nothing in this
-phase's own work created a new reason to need it sooner. Tracked as still open below.
+Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `EXEC-7`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`,
+`DISCLOSE-1`, `TEST-1` — all of it now, including `EXEC-7` (crash/resume), built in a follow-up
+pass the same day once the rest of the phase was live-verified.
 
 - `controlplane/model_provider.py`: `ModelProvider` protocol, `MockModelProvider` (`TEST-1`,
   scripted responses/exceptions, zero network), `OpenAIProvider` (the only module that imports
@@ -190,18 +189,33 @@ phase's own work created a new reason to need it sooner. Tracked as still open b
   hardcoded "no third-party model provider is used" line from Phase A — a `DISCLOSE-1`
   compliance bug the instant a real provider was configured. Now built from the run's actual
   `model_in_use`/`model_name` state.
-- **Exit criteria**: FRD §6 criteria 6 (deterministic verdicts), 9 (budgets halt), and 13
-  (hermetic) pass. Criterion 11 (crash is legible, `EXEC-7`) does not yet — not attempted.
-  **A full run completed against the real model, model doing the edits**: `gpt-5.6-sol` via the
-  real OpenAI API, live, against the Phase A synthetic fixture (deliberately not the real
-  stretch-goal target on this first live run) — both phases succeeded on the first attempt, zero
-  retries needed, ~1500 input / ~1100 output tokens, ~$0.03. Generated code verified by hand
-  against `git diff`: a correct divide-by-zero guard and a correct `Multiply` method plus test,
-  following the existing code's own conventions, touching nothing outside declared scope.
-  47/47 hermetic tests pass (14 new: `test_model_provider.py`, `test_llm_implementer.py`,
-  `test_runner_llm.py` — the last of these drives `Runner` itself through `MockModelProvider`,
-  covering first-attempt success, malformed-response retry, retry-budget exhaustion, the
-  file-only reset between attempts, and both the pre-call and post-call budget-overrun paths).
+- **`EXEC-7`, built same day in a follow-up pass**: `controlplane/run_lock.py` — an exclusive
+  lock keyed to run id, using OS-native advisory file locking (`msvcrt` on Windows, `fcntl`
+  elsewhere) rather than a plain marker file, specifically because the OS releases it
+  automatically when the holding process dies, including a real crash, which a marker file
+  cannot do. `controlplane/resume.py` — on startup, if a run id's event log has events but none
+  of them is `RUN_COMPLETED`/`RUN_ABANDONED`/`ESCALATED`, the system halts and writes a
+  `resume_report.json` (last committed phase, run branch head, working-tree dirty state) rather
+  than auto-resuming or auto-resetting, exactly as specified — resuming stays an operator
+  decision in v1. `Runner` gained an optional `run_id` constructor arg and the CLI a `--run-id`
+  flag, since a run needs a stable, caller-supplied identity to be addressable across process
+  restarts at all; a fresh UUID (the default) never collides with anything, by construction.
+  Also refuses outright if a run id is reused after it already completed. Verified with a real
+  simulated crash, not just a unit test of the pieces: a `MockModelProvider` scripted to raise
+  mid-phase leaves genuinely incomplete state, and a second `Runner` instance against the same
+  run id correctly detects it, writes the report, and never re-attempts the phase.
+- **Exit criteria — met.** FRD §6 criteria 6 (deterministic verdicts), 9 (budgets halt), 11
+  (crash is legible), and 13 (hermetic) all pass. **A full run completed against the real
+  model, model doing the edits**: `gpt-5.6-sol` via the real OpenAI API, live, against the
+  Phase A synthetic fixture (deliberately not the real stretch-goal target on this first live
+  run) — both phases succeeded on the first attempt, zero retries needed, ~1500 input / ~1100
+  output tokens, ~$0.03. Generated code verified by hand against `git diff`: a correct
+  divide-by-zero guard and a correct `Multiply` method plus test, following the existing code's
+  own conventions, touching nothing outside declared scope. 64/64 hermetic tests pass (31 new
+  across the two passes: `test_model_provider.py`, `test_llm_implementer.py`,
+  `test_runner_llm.py`, `test_run_lock.py`, `test_resume.py`, `test_runner_resume.py` — the
+  `_runner_*` files drive `Runner` itself, not just the isolated pieces, through
+  `MockModelProvider` and a real simulated crash).
 
 ## Phase F — Real-repo validation — *was Phase 8*
 **Goal**: run the whole thing against a real .NET Framework codebase and see what breaks.

@@ -1230,3 +1230,86 @@ still-open EXEC-7), run `pip install -r requirements.txt`, run
 `python -m unittest discover -s controlplane/tests` (expect 47/47), then either build EXEC-7,
 run the live model against the real stretch-goal target (after confirming disclosure
 eligibility), or finish Phase B's B1/B2.
+
+
+---
+
+### 2026-09-20 — EXEC-7: crash/resume, closing out Phase E fully
+
+Same day, follow-up to the live-model run. User said "continue" without naming a specific next
+step among the three offered (EXEC-7, running the live model against the real stretch-goal
+target, or finishing Phase B's B1/B2).
+
+Reasoned through which "continue" should mean rather than picking arbitrarily: running the live
+model against alloy-mvc-template requires an explicit operator confirmation of DISCLOSE-1's
+eligibility conditions per the FRD's own text, and this project already knows that repo
+contains live secrets (SECRET-1 found two of them during Phase D). A bare "continue" doesn't
+clear that bar, so that option was set aside rather than assumed. Between the remaining two,
+EXEC-7 was picked as the more natural default: it completes the phase already in progress
+(Phase E was explicitly logged as "mostly done" pending this one piece) rather than opening a
+new, independent thread.
+
+Re-read EXEC-7's exact current FRD text before building, per the project's established habit:
+"The system SHALL hold an exclusive lock keyed to run id for the duration of a run, and SHALL
+refuse to start a second process against the same run. On startup, if the event log shows a run
+that is neither RUN_COMPLETED, RUN_ABANDONED, nor ESCALATED, the system SHALL halt and emit a
+resume report -- describing the last committed phase, the run branch head, and any uncommitted
+working-tree state -- rather than automatically resuming or resetting. Resuming is an operator
+decision in v1."
+
+**A design gap surfaced immediately**: Runner had never had a stable, caller-addressable run id
+-- every invocation generated a fresh UUID, so there was no way for a second process to ever
+"reuse" a run id and trigger the resume path in the first place. Added an optional `run_id`
+constructor argument (and a `--run-id` CLI flag) rather than deriving one implicitly, since an
+implicit derivation (e.g. hashing the plan) would silently collide runs the operator meant to be
+independent -- explicit is safer here than clever.
+
+**What was built**:
+- `controlplane/run_lock.py` -- an exclusive lock keyed to run id, using the OS's own advisory
+  file locking (msvcrt on Windows, fcntl elsewhere) rather than a plain "does this file exist"
+  marker. This was a deliberate choice, not the simplest option: a marker file left behind by a
+  crashed process would block every future attempt forever, since nothing would ever delete it.
+  OS-native locks are released automatically when the holding process's file handle closes --
+  including on a crash -- which is the actual property EXEC-7 needs.
+- `controlplane/resume.py` -- `is_incomplete()` reads a run's event log and checks whether any
+  event is one of the three terminal types; `build_resume_report()` assembles the last
+  committed phase, the run branch's head commit (if the branch exists), and the target repo's
+  working-tree dirty state (if it exists) into a report; `write_resume_report()` persists it
+  next to the run's other artifacts, mirroring how escalation reports are already written.
+- `controlplane/runner.py` -- `run()` now acquires the lock first, refusing immediately
+  (RunLockHeld) if another process already holds it, before touching anything. Once locked, it
+  checks for incomplete prior state and halts with a resume report if found -- again before
+  touching anything, including before re-materializing the target repo. A third guard refuses
+  outright if a run id is reused after it already reached a terminal state, rather than
+  crashing on a `shutil.copytree` destination-exists error or silently starting over.
+
+**Verification, deliberately not just unit tests of the isolated pieces**: a dedicated
+integration test simulates a real crash by scripting a MockModelProvider to raise an uncaught
+RuntimeError mid-phase, confirms the exception propagates (the "crash"), then constructs a
+second Runner against the identical run id and confirms it detects the incomplete state, writes
+the report, and -- critically -- never calls the model again, i.e. never re-attempts the phase
+on its own. A second test manually acquires the lock before calling `Runner.run()`, confirming
+a live concurrent holder is refused without the target repo ever being touched. A third confirms
+reusing an already-completed run id is refused rather than silently re-run. All three run
+against a tiny synthetic single-file fixture, not the .NET one, keeping this fast and
+domain-unrelated. 17 new tests total (5 for run_lock.py, 9 for resume.py, 3 integration-level
+against the real Runner); 64/64 hermetic tests pass project-wide.
+
+Also live-verified via the actual CLI, not just tests: `--run-id exec7-cli-check` run to
+completion (the default fixture's built-in phase-3 scope violation escalated it, a terminal
+state), then re-run with the identical `--run-id` -- correctly refused with "already has a
+completed run," not silently re-executed.
+
+**Disposition**: FRD SS6 acceptance criteria 6, 9, 11, and 13 all pass now. Phase E is fully
+done, not "mostly done." `IMPLEMENTATION-PLAN.md` and `CLAUDE.md` updated accordingly.
+
+**State after this entry**: git status shows `controlplane/run_lock.py`, `controlplane/resume.py`,
+three new test files, and modifications to `runner.py`/`cli.py` pending commit. v1 requirement
+count unchanged at 29 -- EXEC-7 was already v1-tagged from the original rightsizing pass; this
+was completing declared scope, not promoting anything new.
+
+**To resume cold**: read CLAUDE.md in full, then FRD.md's EXEC-7 entry, run
+`python -m unittest discover -s controlplane/tests` (expect 64/64), then pick from: running the
+live model against the real stretch-goal target (only after explicit DISCLOSE-1 eligibility
+confirmation -- that repo has known live secrets), finishing Phase B's B1/B2, or starting
+Phase F.
