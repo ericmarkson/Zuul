@@ -1,0 +1,12 @@
+{
+  "id": "retarget-sdk-style-project",
+  "title": "Convert a legacy MSBuild project to SDK-style",
+  "applies_to_categories": ["project-format", "target-framework"],
+  "side_effect_class": "file-only",
+  "description": "Rewrites a non-SDK-style .csproj (the old 2003 MSBuild XML format) into the modern SDK-style form (<Project Sdk=\"Microsoft.NET.Sdk\">), preserving the existing TargetFrameworkVersion where possible (e.g. net472) so this can land as its own phase before any framework retargeting. This is a pure text rewrite of the project file -- it does not touch source files and does not invoke a package manager, which is why it is file-only rather than package-manager-mutating.",
+  "parameters": [
+    {"name": "csproj_path", "description": "Path to the .csproj file to rewrite."},
+    {"name": "target_framework", "description": "The TargetFramework moniker to write (e.g. net472, net8.0). Defaults to the closest equivalent of the project's existing TargetFrameworkVersion."}
+  ],
+  "notes": "Does not by itself resolve incompatible-api findings or migrate packages.config -- those are separate templates, on purpose, so each phase's declared scope and side-effect class stay accurate (PLAN-5, INTEGRITY-8)."
+}

@@ -954,3 +954,93 @@ run `python -m unittest discover -s controlplane/tests` (expect 15/15) and
 `python -m controlplane.cli run --yes` to confirm current state, then pick up Phase B's
 remaining spikes (B1: `ENV-5` Linux-container implementer isolation; B2: private NuGet feeds)
 or start Phase C.
+
+
+---
+
+### 2026-09-20 — Phase C: the reference knowledge pack, run for real against the stretch-goal repo
+
+New day. User said "continue with phase c" after the previous session's recommendation
+(Phase C over finishing Phase B's B1/B2, since B1/B2 solve problems — a misbehaving LLM
+implementer, a private-feed-dependent target — that don't exist yet in the running system,
+while Phase C is genuine new capability that Phase A's plan consumer is already waiting on).
+
+Before building, re-read the exact current FRD text for AUDIT-1, PLAN-1, KNOWLEDGE-1/4, and
+INTEGRITY-8 rather than working from memory of earlier paraphrases, since this project has
+already been burned once by drift between what a doc says and what an agent remembers it
+saying. Confirmed Phase C's actual scope is narrower than it might sound: emit an AUDIT-1-
+compliant findings file and a node-template catalogue. Turning findings into a runnable plan
+(the grouping logic) is Phase D, not this phase — Phase C's own exit criteria only requires
+that Phase A's plan loader keep working unchanged, which it trivially does since Phase C never
+touches `controlplane/`.
+
+**What was built**, all under `knowledge-packs/dotnet-framework-to-core/` — deliberately a
+sibling to `controlplane/`, not inside it, with a hyphenated directory name specifically so it
+can never be `import`ed from the control plane by accident. This is the domain-agnostic
+boundary made structural, not just stated:
+- `analyzer.py` — read-only static analysis. No build, no execution, no network: parses
+  `.csproj` XML (detecting SDK-style vs legacy via the root element's namespace/`Sdk`
+  attribute) and file presence only. Detects: legacy project format, declared target framework,
+  `packages.config` vs `PackageReference`, references to Framework-only assemblies grouped by
+  family (`System.Web`, `System.Windows.Forms`, `System.Drawing`, `System.ServiceModel`,
+  `System.EnterpriseServices`, `System.Web.Services`, `System.Workflow`), and legacy
+  `App.config`/`Web.config` files (`bin`/`obj` excluded throughout).
+- `findings.py` — the `Finding` dataclass and JSON emitter. Every finding validates it has a
+  category, a severity from a closed set, and at least one affected path — AUDIT-1's minimum,
+  enforced in `__post_init__` rather than just hoped for. The findings file itself carries a
+  `pack_content_hash` (the pack hashing its own source tree) laying groundwork for the
+  content-hash half of KNOWLEDGE-4, without wiring the control plane to record it yet — that's
+  a Phase D/E integration point, deliberately not done here.
+- `templates/` — four node templates as plain JSON files (`retarget-sdk-style-project`,
+  `migrate-packages-config-to-package-reference`, `replace-incompatible-api`,
+  `modernize-config-file`), each declaring an INTEGRITY-8 side-effect class. Three are
+  `file-only`; the packages.config migration is `package-manager-mutating`, matching the FRD's
+  own prior observation that this is the *common* case for this domain, not the exception.
+  `replace-incompatible-api`'s own description is honest about its limits: unlike the other
+  three, source-level API substitution isn't mechanical, and the template says so rather than
+  overclaiming.
+- `cli.py` — invoked directly by file path (`python knowledge-packs/dotnet-framework-to-core/
+  cli.py audit --repo <path> --out <file>`), not via `python -m`, since the pack directory's
+  hyphenated name makes it non-importable as a module — a deliberate choice, not a limitation.
+- `tests/test_analyzer.py` — 9 hermetic unittest-based tests against synthetic in-memory
+  fixtures (a legacy csproj string and an SDK-style one), covering every detector plus the
+  bin/obj exclusion and the AUDIT-1 minimum-shape guarantee.
+
+**Run against two real targets, not just synthetic ones**:
+1. `fixtures/sample-dotnet-app` (Phase A's own fixture, already modern SDK-style): 2 low-
+   severity findings only (target-framework, informational). Correctly quiet — proves the
+   analyzer doesn't manufacture findings on a clean project.
+2. `C:\Code\_sandbox\Opti11\alloy-mvc-template` — the real stretch-goal repo, used for the
+   first time in this project, strictly read-only (the analyzer only ever opens files for
+   reading; nothing was written to or executed in that repo). **11 genuine findings: 4 high, 2
+   medium, 5 low.** Correctly identified: the legacy (non-SDK) project format; `v4.6.1`
+   targeting; `packages.config`; three incompatible-API assembly-family groups, the largest
+   being `System.Web` with 15 distinct sub-assemblies (`System.Web.Mvc`,
+   `System.Web.Abstractions`, `System.Web.Routing`, etc.); and five legacy config files,
+   including three nested under third-party CMS module directories that a naive "just check
+   the project root" scanner would have missed. This is a real, substantive, accurate audit of
+   a real legacy codebase — not a demo against a fixture built to be found.
+
+**Regression check**: after building, re-ran `controlplane/`'s full test suite (15/15,
+unchanged) and a live `python -m controlplane.cli run --yes` (same happy-path-then-escalation
+behavior as every previous run) to confirm Phase C's exit criteria — "Phase A's plan loader
+consumes it unchanged" — actually holds, not just that it should in theory. It does, trivially,
+since Phase C never imports from or edits `controlplane/`.
+
+**What changed in the docs**: `IMPLEMENTATION-PLAN.md` Phase C marked done with the concrete
+results; `CLAUDE.md`'s Phase-status summary, decision log, and "Next action" updated (Phase D
+now the recommended next step, ahead of finishing Phase B's B1/B2, for the same reasoning that
+picked Phase C over them last session — genuine new capability over sandboxing a threat that
+doesn't exist yet).
+
+**State after this entry**: `git status` shows `knowledge-packs/` as new, untracked, alongside
+the usual doc-file modifications, pending commit. v1 requirement count unchanged at 29 — Phase
+C didn't promote or demote anything, it built toward requirements already tagged v1.
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (AUDIT-1, PLAN-1, KNOWLEDGE-1/4,
+INTEGRITY-8 especially, for the requirements Phase C targets), run
+`python -m unittest discover -s controlplane/tests` and
+`python -m unittest discover -s knowledge-packs/dotnet-framework-to-core/tests` (expect 15/15
+and 9/9), inspect `.scratch/audits/alloy-mvc-template.json` for the real audit output, then
+start Phase D (audit → plan generation) or finish Phase B's B1 (`ENV-5` spike) / B2 (private
+feeds).

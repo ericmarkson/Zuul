@@ -1,0 +1,12 @@
+{
+  "id": "replace-incompatible-api",
+  "title": "Replace a Framework-only API with its .NET Core equivalent",
+  "applies_to_categories": ["incompatible-api"],
+  "side_effect_class": "file-only",
+  "description": "Source-level substitution of a Framework-only API (System.Web, System.Web.Mvc, System.Windows.Forms, System.Drawing, System.ServiceModel server-side, etc.) for its closest .NET Core equivalent (ASP.NET Core MVC, System.Drawing.Common or a cross-platform imaging library, a gRPC/HTTP service, etc.). Declared file-only because the edit itself is a code change; it does not invoke a package manager or an external service on its own.",
+  "parameters": [
+    {"name": "source_paths", "description": "The source files referencing the incompatible API."},
+    {"name": "assembly", "description": "Which incompatible assembly family this phase addresses (e.g. System.Web)."}
+  ],
+  "notes": "This is the category where a mechanical template is least sufficient -- unlike the other three, source-level substitution genuinely requires understanding what the code does, not just its shape. This template exists to declare the contract (scope, side-effect class), not to claim the substitution is mechanical. A real implementer (human or model) supplies the actual replacement code; if that requires a new external dependency to be called at runtime rather than compiled in, the correct side-effect class for THAT phase is external-service-call, not this one."
+}

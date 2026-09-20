@@ -86,25 +86,44 @@ question was deliberately not spiked — deferred by the operator's own call, no
   each either promoting a v2 requirement, confirming its deferral, or converting it to won't-do.
   B3's answer is already recorded (promoted).
 
-## Phase C — Reference knowledge pack (.NET) — *was Phase 1*
+## Phase C — Reference knowledge pack (.NET) — *was Phase 1* — **done, 2026-09-20**
 **Goal**: the first domain-specific knowledge source: an audit that emits an `AUDIT-1`-compliant
 findings file, plus a catalogue of parameterized node templates.
 
-Covers FRD v1: `AUDIT-1`, `PLAN-1` (audit-derived path), and the v1 half of `KNOWLEDGE-4`
-(content hash recorded).
+Covers FRD v1: `AUDIT-1`, and lays groundwork for `PLAN-1` (audit-derived path — the plan
+*generator* that consumes this output is Phase D, not this phase) and the v1 half of
+`KNOWLEDGE-4` (the pack now computes its own content hash; wiring the control plane to record
+it in the event log at run time is a Phase D/E integration point, not done here).
 
-- **Task 1**: Minimal custom static analyzer for .NET targeting detection.
-- **Task 2**: Findings schema — category, severity, affected paths, remediation tag. This JSON
-  file is the contract between pack and control plane.
-- **Task 3**: Node-template catalogue as plain versioned files (e.g.
-  `retarget-sdk-style-project`, `upgrade-incompatible-package`), each declaring a side-effect
-  class per `INTEGRITY-8`.
-- **⚠ Changed from the original plan**: **this is a local versioned directory plus a CLI, not an
-  MCP server.** See FRD `KNOWLEDGE-1` — MCP is now v2 and gated on a written-down case where the
-  *implementer model* must call pack tools live, mid-phase. Building the pack as a package first
-  costs nothing and keeps that option open.
-- **Exit criteria**: the pack emits a compliant findings file against a real .NET repo, and
-  Phase A's plan loader consumes it unchanged.
+- **Task 1 — done**: `knowledge-packs/dotnet-framework-to-core/analyzer.py`. Read-only static
+  analysis, zero network, zero build/execution: parses `.csproj`/`.config` XML and file
+  presence only. Detects legacy (non-SDK) project format, the declared target framework,
+  `packages.config` vs `PackageReference`, Framework-only assembly references with no direct
+  .NET Core equivalent (`System.Web`, `System.Windows.Forms`, `System.Drawing`,
+  `System.ServiceModel`, `System.EnterpriseServices`, `System.Web.Services`,
+  `System.Workflow`), and legacy `App.config`/`Web.config` files.
+- **Task 2 — done**: `findings.py`. Every finding carries `category`, `severity`,
+  `affected_paths` (AUDIT-1's minimum) plus `id`, `description`, `remediation_tag`, and
+  `evidence`. The findings file itself carries a `pack_content_hash` (the pack hashing its own
+  source tree) and `schema_version`.
+- **Task 3 — done**: four node templates in `templates/` (`retarget-sdk-style-project`,
+  `migrate-packages-config-to-package-reference`, `replace-incompatible-api`,
+  `modernize-config-file`), each declaring an `INTEGRITY-8` side-effect class. Three are
+  `file-only`; the packages.config migration is `package-manager-mutating`, matching the FRD's
+  own observation that this is the common case for this domain, not the exception.
+- **Changed from the original plan, as already flagged**: **the pack is a local versioned
+  directory plus a CLI, not an MCP server** (`cli.py`, invoked directly by path — the
+  directory's hyphenated name is deliberate, it can never be `import`ed from `controlplane/`).
+  See FRD `KNOWLEDGE-1`.
+- **Exit criteria — met**: `python knowledge-packs/dotnet-framework-to-core/cli.py audit --repo
+  <path> --out <file>` run against two real targets. Against `fixtures/sample-dotnet-app`
+  (already modern SDK-style): 2 low-severity findings only, correctly quiet. Against the
+  stretch-goal target `C:\Code\_sandbox\Opti11\alloy-mvc-template` (read-only, never modified):
+  **11 findings — 4 high, 2 medium, 5 low** — correctly identified the legacy project format,
+  `v4.6.1` targeting, `packages.config`, three incompatible-API groups (15 `System.Web.*`
+  assemblies alone), and five legacy config files. `controlplane/`'s test suite (15/15) and a
+  live Phase A run were re-verified afterward — the plan loader was never touched and behaves
+  identically. 9/9 hermetic analyzer tests pass, zero network.
 
 ## Phase D — Audit → plan generation — *was Phase 2*
 **Goal**: turn any findings file into a concrete plan of the same shape Phase A already executes.
