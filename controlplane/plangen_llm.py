@@ -76,6 +76,21 @@ directory, that exits 0 if and only if this specific remediation actually happen
 the plan's default build/test check set is already sufficient, with nothing phase-specific worth \
 checking.
 
+A check that only proves a forbidden pattern is GONE can be satisfied just as easily by deleting \
+the code that used it as by actually porting it -- deletion is often the cheaper path for an \
+implementer facing a hard rewrite, and a check that only looks for absence cannot tell the \
+difference. Before finalizing, decide honestly which kind of phase this is:
+- A REMOVAL phase, where a file or setting is meant to disappear with no successor (e.g. a \
+legacy file superseded by a replacement already covered by its own existence check) -- absence \
+is genuinely the correct, sufficient proof here.
+- A TRANSFORM phase, where existing behavior is meant to survive in a new form (e.g. rewriting \
+source files to a new API rather than deleting the functionality they implement) -- for these, \
+use read_file/grep_repo to note distinctive identifiers (type names, method names, or other \
+unique strings) that the current code actually defines, and include a check that greps the \
+final repository for those same identifiers (or ones your own description commits to renaming \
+them to) still being present somewhere -- not only that the old, forbidden pattern is gone. This \
+generalizes to any language or file type; it is not specific to any one framework's concepts.
+
 Rules:
 - Research is most valuable for findings whose category a narrow static scanner could plausibly \
 miss (API/type usage, cross-file references) -- it may be unnecessary for something like a single \
@@ -83,6 +98,8 @@ well-defined project-format finding with no ambiguity about what needs to change
 - Use your tools sparingly and purposefully -- you have a bounded number of tool-call rounds.
 - "checks" being null is a real, correct answer when the plan's default check set already proves \
 the remediation -- do not invent a check just to have one.
+- For a TRANSFORM phase, you MUST include at least one check that positively confirms real \
+content survived, not solely a check that the old pattern is gone.
 - You must call finalize_proposal to complete this task. Do not describe a proposal in plain text \
 instead of calling it.
 """

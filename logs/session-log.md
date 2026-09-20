@@ -1871,3 +1871,85 @@ reviewed by the operator before anything executes.
 
 **To resume cold**: read this entry, then decide with the user whether to spend a fourth live
 Phase F execution run (now against the research-informed plan) or move to other open work.
+
+---
+
+### 2026-09-20 — Fourth live run: two real quality wins, one real quality failure the pipeline could not see, and a fix that closes it generally
+
+User asked "what is next" -- read as approval to spend the fourth live Phase F run flagged as the
+open item in the previous entry, not a fresh question. Regenerated the plan (research loop,
+~$0.44) and ran all 4 phases live against a fresh scratch copy of the real `alloy-mvc-template`
+repo. All 4 phases reported "committed and verified" -- the first time this project has reached
+that state for a real repo. **Read every diff by hand rather than trusting the report**, per this
+project's own standing rule, and the actual result is not a clean win.
+
+Phase 1 (SDK retarget), phase 2 (packages.config -> PackageReference, 46 real `PackageReference`
+entries confirmed), and **phase 4 genuinely fixed Phase F's original gap 2 this run**: real
+settings extracted from `ConnectionStrings.config`/`EPiServerFramework.config`/`episerver.config`
+into a sensible `appsettings.json`, with real Options-pattern wiring added to `Startup.cs`.
+
+**Phase 3 is a serious content-quality failure the pipeline reported as success.**
+`Startup.cs`/`Program.cs` got a genuinely competent ASP.NET Core rewrite (real hosting
+boilerplate, routing, authentication) -- but the model deleted every controller,
+business-logic class, helper, and view model instead of porting them: 44 files changed, 87
+insertions against 2596 deletions. The new routing table still maps a `"Register"` route to
+`RegisterController`, a class the same commit deleted -- a real runtime break. Both `dotnet
+build` and the model's own generated check (`no-incompatible-framework-references`, an
+absence-only grep) passed anyway, because deleting the code that used the forbidden APIs
+satisfies "the forbidden pattern is gone" exactly as well as porting it does, and deletion is the
+cheaper path for a model facing a hard rewrite. This is FRD `§5a`'s named threat
+("helpfully reforms the repository"), caught by hand, not by anything in the pipeline.
+
+**User's framing, again pattern-recognizing rather than one-off**: "Isnt this what the
+coordinator or researcher was supposed to be doing? it should be identifying what the definition
+of done is, as well as what the QA is testing against, as a whole, right?" Correct, and sharper
+than "the researcher should also look at output": the researcher already owns check-authoring --
+that is exactly what `finalize_proposal`'s `checks` field is. This was not a missing mechanism,
+it was an instruction gap in the mechanism that already exists: the system prompt asked for a
+check that proves "this remediation happened," and the model interpreted that as proving the old
+pattern is *gone*, never that something equivalent is *present*. Absence-only checks are
+trivially satisfied by deletion; nothing told the model that mattered.
+
+**Why the researcher can actually fix this, not just diagnose it**: it runs before the
+implementer touches anything, with `read_file`/`grep_repo` access to the *original* code while
+everything the phase is about to touch still exists. It can enumerate what is really there
+(distinctive type/method names, or any other language's equivalent) and write a check asserting
+that surface still exists afterward -- the same mechanism, reasoned about more completely, not a
+new one. Honest limit stated up front, not glossed over: this cannot become "prove the migration
+is semantically correct" in general -- what it can do is close this specific failure mode
+(wholesale deletion masquerading as remediation) by distinguishing a REMOVAL phase (absence is
+the correct, sufficient proof -- e.g. deleting a legacy config with a replacement covered by its
+own existence check) from a TRANSFORM phase (existing behavor is meant to survive in a new form,
+so presence of survival evidence must also be checked), a distinction the model can already
+reason about from the finding descriptions it has, without hardcoding a domain concept like
+"controller" into the prompt.
+
+**Built**: `plangen_llm.py`'s `SYSTEM_PROMPT` gained the REMOVAL-vs-TRANSFORM distinction and a
+new rule -- for a TRANSFORM phase, the model MUST include at least one check that positively
+confirms real content survived, not solely a check that the old pattern is gone. No new tools,
+no new module, no code-level enforcement of this (which would just reintroduce a hardcoded
+heuristic under a different name) -- purely a prompt change to the mechanism that already existed.
+New `DefinitionOfDoneGuidanceTests` in `test_plangen_llm.py` anchors the prompt's key phrases so a
+future edit can't silently drop this distinction without a test noticing (not a behavioral test --
+prompt wording can't be asserted against model behavior hermetically). 120/120 hermetic tests
+pass (3 new).
+
+**Live-validated immediately, cheaply (~$0.43, plan generation only, no execution spent yet)**:
+regenerated the plan from the same real audit, and phase-3's proposed checks now include, on top
+of the same absence check as before, a second block explicitly commented "Positive survival
+checks make this a transformation check, not deletion-only proof" -- asserting real, specific
+identifiers the model found via its own research still exist: `class RegisterController`,
+`class SearchService`, the actual Razor view-model type names, `@RenderBody()`. Every identifier
+came from research into this specific repo, none hardcoded in the prompt. This check would have
+failed the exact diff phase-3 produced last run (`RegisterController.cs` was deleted entirely).
+
+**Not yet done**: a fifth live execution run to confirm the strengthened check actually changes
+the implementer's behavior (either by catching a repeat deletion and escalating, or by
+succeeding because the implementer this time actually ports the code) -- held pending a
+check-in with the user, consistent with this session's practice throughout. Total live spend
+this entry: ~$1.3 (~$0.86 execution + ~$0.44 regeneration).
+
+**What remains exactly as built, untouched by this entry**: `INTEGRITY-3`, `QA-2`, the single
+`APPROVAL-1` gate, and the grouping logic in `plangen.py` -- this entry is the third time the
+pivot has touched *how a group's phase gets authored* (templates -> LLM proposal -> research
+loop -> stronger check-authoring guidance) without ever touching grouping or execution.

@@ -158,5 +158,25 @@ class ResearchLoopTests(unittest.TestCase):
         self.assertEqual(len(provider.tool_calls_log), 3)
 
 
+class DefinitionOfDoneGuidanceTests(unittest.TestCase):
+    """Anchors the system prompt's guidance against a real failure found live, 2026-09-20: a
+    model-authored check that only proves a forbidden pattern is GONE is trivially satisfied by
+    deleting the code that used it, not just by porting it. Not a behavioral test (prompt wording
+    can't be asserted against model behavior hermetically) -- this exists so a future edit to
+    SYSTEM_PROMPT can't silently drop the distinction between a REMOVAL phase (absence is
+    correct) and a TRANSFORM phase (presence of surviving content must also be checked) without
+    a test noticing."""
+
+    def test_prompt_distinguishes_removal_from_transform_phases(self):
+        self.assertIn("REMOVAL", plangen_llm.SYSTEM_PROMPT)
+        self.assertIn("TRANSFORM", plangen_llm.SYSTEM_PROMPT)
+
+    def test_prompt_requires_a_positive_survival_check_for_transform_phases(self):
+        self.assertIn("MUST include at least one check that positively confirms", plangen_llm.SYSTEM_PROMPT)
+
+    def test_prompt_warns_that_absence_only_checks_are_satisfied_by_deletion(self):
+        self.assertIn("deleting the code that used it", plangen_llm.SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()
