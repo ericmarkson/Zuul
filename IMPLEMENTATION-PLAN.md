@@ -217,12 +217,36 @@ pass the same day once the rest of the phase was live-verified.
   `_runner_*` files drive `Runner` itself, not just the isolated pieces, through
   `MockModelProvider` and a real simulated crash).
 
-## Phase F — Real-repo validation — *was Phase 8*
+## Phase F — Real-repo validation — *was Phase 8* — **first run done, 2026-09-20; gaps found, not yet fixed**
 **Goal**: run the whole thing against a real .NET Framework codebase and see what breaks.
 - Validate all 14 of FRD §6's v1 acceptance criteria.
 - Expect FRD §10's open issues (git hooks, context-window limits, flaky checks, private feeds)
   to surface here if they have not already. **Resolving them is a requirements change earned by
   evidence — the only kind this project should be accepting for now.**
+
+**First run, against `alloy-mvc-template` (scratch copy, real repo confirmed untouched
+afterward): the pipeline mechanics worked; the migration content quality was mixed, and it
+surfaced exactly the kind of evidence-earned findings this phase exists to produce, not a clean
+pass. Full detail in `logs/session-log.md`'s "Phase F, first run" entry. Two real gaps found,
+neither fixed yet, pending direction:**
+1. Phase C/D's `declared_scope` for `incompatible-api` findings covers only where the analyzer's
+   evidence lived (the `.csproj`'s `<Reference>` list), not the actual `.cs` usage sites — a
+   phase built from it cannot do a real fix within its own declared scope. Deleting the
+   references was the only in-scope move available, and it would make a real build fail in a
+   new way if this repo could be built here at all.
+2. A phase (`modernize-config-file`) deleted 543 lines across 5 config files and produced none
+   of the `appsettings.json` replacement its own description promised — a real, "helpfully
+   reforms the repository" failure (FRD §5a's named threat), and the pipeline reported it as
+   verified, because `QA-5`'s delta check answers "did the build get worse," not "did this
+   phase do what it said it would." `dotnet build` already failed identically before and after
+   every phase in this environment (no real MSBuild), so delta-neutrality gave zero signal
+   either way — known going in, but this run made the consequence concrete rather than
+   theoretical.
+
+Not yet resolved: whether/how to fix declared-scope generation for `incompatible-api`, and
+whether a new requirement (something checking a phase actually did what it claimed, independent
+of build success) is warranted. Per this project's own rule, this is earned evidence, not a
+checklist item — the next FRD change here should be scoped to exactly these two findings.
 
 ---
 

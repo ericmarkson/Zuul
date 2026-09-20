@@ -1313,3 +1313,88 @@ was completing declared scope, not promoting anything new.
 live model against the real stretch-goal target (only after explicit DISCLOSE-1 eligibility
 confirmation -- that repo has known live secrets), finishing Phase B's B1/B2, or starting
 Phase F.
+
+
+---
+
+### 2026-09-20 — Phase F, first run: real findings from a real repo, exactly as promised
+
+Same day, immediately following EXEC-7. User confirmed alloy-mvc-template's third-party
+disclosure eligibility (AskUserQuestion, answered "yes, proceed") after being shown that
+"finish Phase E" and "start Phase F" were the same next action, not a fork -- Phase F's own
+stated goal is "run the whole thing against a real .NET Framework codebase and see what
+breaks," which is exactly what running the live model against a real repo is.
+
+Before running, flagged one structural concern found by inspection rather than by running:
+Phase D's plan generator scopes an incompatible-api phase to wherever the analyzer found its
+*evidence* (the .csproj's <Reference> elements), not the actual .cs files that *use* those
+APIs -- meaning that phase could not, even in principle, do a real fix within its declared
+scope. Decided to run anyway rather than pre-fix it, since seeing the actual failure mode is
+more informative than guessing at it, and it's exactly the kind of thing Phase F exists to
+surface.
+
+Checked the real csproj's size first (545 lines, ~35KB) to set sane budgets: reasoning_effort
+medium, 60k tokens/phase, 200k tokens/run, 300s/phase, 1800s/run wall-clock, retry_budget 2 --
+all generous relative to the safe-fixture run's defaults, since this is a genuinely harder task.
+
+**The run**: `alloy-live-001`, all 4 phases from the real audit-derived plan, against a fresh
+scratch copy (never the original repo -- confirmed via `git status` on the original afterward:
+clean, `web.config` still present). All 4 phases "committed and verified" on the first attempt.
+23556 input / 9484 output tokens, ~$0.28.
+
+**But "verified" needs an asterisk, and it's an important one.** `dotnet build` failed
+identically (`exit=1`, the synthetic `__process_exit__` marker, no toolchain to even attempt a
+legacy-format build in this environment) at baseline and after every single phase. QA-5's delta
+logic correctly did not treat that as a regression -- it wasn't one -- but it means the check
+never actually validated anything about what the model did in any of these four phases. That
+was known going in (documented back in Phase D), but this run makes the consequence concrete:
+the pipeline can report "verified" on a real, meaningfully bad edit, because verification
+itself has nothing to measure it against in this environment.
+
+**Phase-by-phase, from reading the actual diffs, not trusting the run's own "OK":**
+1. **phase-1 (retarget-sdk-style-project): genuinely good.** Correctly converted the entire
+   legacy-format csproj to SDK-style, preserved `TargetFramework=net461`, and converted every
+   packages.config-era `<Reference>`+`HintPath` entry into a `<PackageReference>` with the
+   right package name and version. Spot-checked two of the extracted versions
+   (`EPiServer.CMS.Core` 11.14.2, `Castle.Windsor` 4.1.0) against the original file's literal
+   `HintPath` strings -- both matched exactly. Not hallucinated; correctly read from the input.
+2. **phase-2 (packages.config -> PackageReference): good.** Emptied packages.config as
+   expected, made a small, sensible cleanup pass on the csproj's PackageReference list
+   (alphabetized, caught one it had initially named slightly wrong).
+3. **phase-3 (replace-incompatible-api): did the only thing it could within its scope, and
+   that thing was borderline harmful.** Confined to editing only the .csproj (see the
+   structural concern above), it deleted the `<Reference>` entries for
+   System.Web/System.Drawing/System.EnterpriseServices. The actual .cs source files that
+   `using System.Web.Mvc` and inherit from `Controller` were never in scope to touch. If this
+   project could be built at all, this phase's own edit would now break it in a new way
+   (missing-reference errors) rather than fix anything -- and nothing in the pipeline could see
+   that, for the same delta-neutrality reason as above.
+4. **phase-4 (modernize-config-file): a real failure.** Deleted all 5 config files in scope
+   (543 lines total: `web.config`, three module `web.config` files, `Views/Web.config`) and
+   created no `appsettings.json` anywhere -- confirmed via `find`, nothing matching. The
+   template asked it to extract settings into a JSON replacement; it destroyed the source and
+   produced nothing. This is not a scope problem like phase-3 -- the phase's declared scope was
+   reasonable, the model just did something destructive and incomplete, exactly the
+   "'helpfully' reformats the repository" failure mode FRD S5a names as the expected, normal
+   behavior of this system's central component. And the pipeline reported it as verified.
+
+**What this evidence actually earns, per this project's own rule** ("new requirements should
+be earned by evidence from a run, not derived from a checklist" -- CLAUDE.md, Constraints):
+two real, specific gaps, not a general "the LLM needs better prompting" shrug:
+1. Phase C/D's declared_scope generation for incompatible-api findings needs to include actual
+   usage sites, not just where the analyzer's evidence happened to live. This is a plan-
+   generation fix, knowable without any LLM involved -- it would have been just as wrong for a
+   human implementer working strictly within the stated scope.
+2. There is currently no check for "a phase deleted substantially more than it added and
+   produced none of what its own description promised." QA-5's delta logic answers "did the
+   build get worse," not "did this phase do what it said it would." These are different
+   properties and the second one has no requirement behind it yet.
+
+Neither was fixed in this pass -- surfaced and reported, per the plan, for a decision on
+whether/how to address them, rather than patched unilaterally mid-run.
+
+**State after this entry**: `.scratch/runs/alloy-live-001/` holds the full run (event log,
+diagnostics, escalation-free git history on `run/alloy-live-001`) for inspection; it is
+gitignored scratch, not committed, and will not survive a fresh clone. The real
+`alloy-mvc-template` repo is confirmed untouched. No FRD or IMPLEMENTATION-PLAN.md changes made
+yet pending the user's direction on the two gaps above.
