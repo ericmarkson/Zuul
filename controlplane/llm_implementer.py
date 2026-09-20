@@ -35,12 +35,17 @@ related files you don't already know the name of. Use "." for the repository roo
 - finalize_edits(edits): submit your final, complete set of file edits. Call this exactly once, \
 when you are done gathering any context you need. Each edit's "content" is the COMPLETE new \
 content of that file (not a diff or partial snippet) -- it will overwrite the entire file. If a \
-listed path does not exist yet, propose it as a new file.
+listed path does not exist yet, propose it as a new file. To DELETE an existing file, submit its \
+path with "content" set to JSON null -- not an empty string, which would just replace it with an \
+empty file instead of removing it.
 
 Rules:
 - Only include paths in finalize_edits that make sense for this specific phase's description. \
 Do not "helpfully" touch anything outside what the phase describes, even if you notice other \
 things that look wrong.
+- Pay attention to the verification commands you're given -- if a check requires a legacy file \
+to no longer exist, delete it (content: null) rather than leaving it in place after migrating \
+its contents elsewhere.
 - Use read_file/list_directory sparingly and only when genuinely useful -- you have a bounded \
 number of tool-call rounds.
 - You must call finalize_edits to complete this task. Do not describe edits in plain text \
@@ -86,7 +91,10 @@ TOOLS = [
                             "type": "object",
                             "properties": {
                                 "path": {"type": "string"},
-                                "content": {"type": "string"},
+                                "content": {
+                                    "type": ["string", "null"],
+                                    "description": "Full new file content, or null to delete an existing file at this path.",
+                                },
                             },
                             "required": ["path", "content"],
                         },
@@ -102,7 +110,7 @@ TOOLS = [
 @dataclass(frozen=True)
 class ProposedEdit:
     path: str
-    content: str
+    content: str | None  # None means "delete this file" -- see finalize_edits' tool description
 
 
 @dataclass(frozen=True)
@@ -193,7 +201,10 @@ def _parse_finalize_edits(arguments: dict) -> list[ProposedEdit]:
     for i, item in enumerate(arguments["edits"]):
         if not isinstance(item, dict) or "path" not in item or "content" not in item:
             raise MalformedResponse(f"edits[{i}] missing 'path' or 'content': {item!r}")
-        edits.append(ProposedEdit(path=item["path"], content=item["content"]))
+        content = item["content"]
+        if content is not None and not isinstance(content, str):
+            raise MalformedResponse(f"edits[{i}]['content'] must be a string or null (for deletion), got {content!r}")
+        edits.append(ProposedEdit(path=item["path"], content=content))
     if not edits:
         raise MalformedResponse("finalize_edits call had zero edits")
     return edits

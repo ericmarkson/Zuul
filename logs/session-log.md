@@ -1641,3 +1641,131 @@ priority, as it was before this pivot started.
 **To resume cold**: read `CLAUDE.md`'s "PIVOT BUILT" note and this entry, then decide with the
 user whether to spend the real-money/real-time cost of Phase F's third run now, or move to
 Phase B's remaining spikes first.
+
+---
+
+### 2026-09-20 — Phase F, third run: two phases genuinely succeed, three more real bugs found and fixed, one legitimate escalation
+
+User confirmed the plan from the previous entry: commit the pivot first, then spend the real
+Phase F third run. Committed (`9378180`), then ran the full pipeline live against a fresh scratch
+copy of the real `alloy-mvc-template` repo, `gpt-5.6-sol`, all 4 audit-derived phases, generous
+budgets (150k tokens/phase, 900s/phase wall-clock, matching the file counts involved).
+
+**Bug 1 — a real crash, immediately.** `runner.py`'s `_run_check_set` called `str.format()` on
+every check command part, including the check's own script text. A model-authored check
+(`elem.tag.rsplit('}', 1)[-1]`, ordinary XML-namespace-stripping code) has a lone `}` that isn't a
+`{run_dir}`-style placeholder; `.format()` interprets every brace in a string, not just the known
+tokens, and raised `ValueError: Single '}' encountered in format string`. This is a real,
+generalizable finding: the narrow hand-written template scripts from the old design never
+happened to contain a stray brace; a model given a whole programming language to write checks in
+was always going to hit this eventually. Fixed with `Runner._substitute_placeholders`, literal
+substring replacement for exactly `{run_dir}`/`{phase_id}`/`{result_artifact}`, leaving every
+other brace in a script alone. New `test_check_placeholders.py` (4 tests: the substitution
+helper directly, plus a full `Runner` integration test with a real stray-brace check script).
+
+**Re-ran with a fresh run id (not resumed — EXEC-7's own philosophy: resuming a crash is an
+operator decision, and the crash was a real bug now fixed, so starting clean was the right call,
+not an automatic resume).** Phase 1 succeeded again. Phase 2 (`packages.config` →
+`PackageReference`) escalated after exhausting all 3 attempts — but read by hand, the model had
+correctly converted every real package name and version from `packages.config` into
+`PackageReference` entries (not hallucinated) on every attempt, and simply never deleted
+`packages.config` itself, despite its own phase description saying to twice. The model-authored
+check (`verify-package-reference-migration`) correctly caught this every time and the run halted
+fail-closed rather than reporting false success -- **this is Phase F's original gap 2 (a phase
+that doesn't do what it claims slipping through as "verified") now being caught live**, direct
+validation the redesign's core promise works, even in a case where the underlying remediation is
+incomplete.
+
+**User pushed back on the instinct to patch this by tweaking the prompt.** Their framing: this is
+a good finding since it's what the audit process is supposed to surface, but there should
+"probably [be] some level of 'researcher' to inspect and assess the wider range of actions" --
+i.e. the gap is a missing *layer*, not a wording problem. Investigated before agreeing or
+disagreeing: read `_apply_llm_edits` and found `check_commands = [c.command for c in
+self.plan.check_set]` -- **always the plan's default check set, never the phase's own PLAN-5
+override**. The model's prompt said "Verification commands that will run afterward: [['dotnet',
+'build', ...]]" and never mentioned `verify-package-reference-migration` at all, even though that
+check is exactly what governed its real verdict. Concluded (and the user agreed) that this
+specific failure was not evidence of a missing broad-research layer -- the model already had the
+literal instruction to delete the file, twice, in its own phase description -- it was evidence of
+a narrower, more foundational bug: the model was being judged by a check it was never told
+existed. Recommended fixing that first and re-testing before considering anything heavier (like a
+self-test tool letting the implementer dry-run its own draft, floated as the correct-shaped
+answer to the "missing layer" framing but deferred pending fresh evidence).
+
+**Bug 2 -- fixed.** `_apply_llm_edits` now resolves `phase.checks if phase.checks is not None
+else self.plan.check_set` -- the exact same resolution `_run_check_set` already used to decide
+what actually runs -- so the implementer's prompt now always matches the real verdict criteria.
+New regression test in `test_runner_llm.py` proving a phase-specific check command (deliberately
+different from the plan default) appears in the model's prompt.
+
+**Re-ran again, fresh run id.** Phase 1 succeeded. Phase 2, attempt 1, still failed to delete the
+file (old habit). Attempt 2 -- now visibly aware of the check, per the fix -- the model tried to
+address it by submitting `{"path": "packages.config", "content": null}`, evidently intending
+`null` to mean "delete this file." Nothing in the schema supported that: `ProposedEdit.content`
+had no deletion semantics, and `runner.py` crashed doing `dest.write_text(None, ...)` --
+**bug 3, a real crash, and very likely the true root cause of bug 2's original failure**: the
+model probably wanted to delete the file all along and had no vocabulary to say so.
+
+**Bug 3 -- fixed.** `finalize_edits`' JSON schema and `ProposedEdit` now explicitly support
+`content: null` as a documented deletion instruction (the system prompt says so directly, and
+tells the model when to use it: "if a check requires a legacy file to no longer exist, delete it
+... rather than leaving it in place"). `_parse_finalize_edits` validates content is `str | None`
+explicitly rather than merely checking key presence. `runner.py`'s `_apply_llm_edits` calls
+`dest.unlink(missing_ok=True)` for a `None`-content edit instead of writing it as text. Two new
+hermetic tests in `test_llm_implementer.py` (null content parses as deletion; a non-string
+non-null content still raises `MalformedResponse`) and one full `Runner` integration test in
+`test_runner_llm.py` proving a real end-to-end delete-and-commit, gated by a check that only
+passes if the file is actually gone. 98/98 hermetic tests pass.
+
+**Fourth live run, fresh run id -- real progress.** Phase 1 succeeded. **Phase 2 succeeded for
+real, for the first time**: `packages.config` genuinely deleted, real `PackageReference` entries
+confirmed present in the phase's own commit (not the later phase-3 commit, which coincidentally
+also touched the csproj). Phase 3 (`replace-incompatible-api`) escalated on a **legitimate
+`INTEGRITY-3` scope-conflict** -- the model tried to modify 7 files outside its declared scope:
+two Razor `.cshtml` views (`Views/Register/Index.cshtml`, `Views/Shared/Layouts/_Root.cshtml`)
+and five config files (`Web.Debug.config`/`Web.Release.config` -- XDT transform siblings of
+`Web.config` -- and the three `modules/_protected/*/web.config` files that the plan had assigned
+to phase-4, not phase-3). The run halted fail-closed exactly as designed; the real repo confirmed
+untouched (`git status --short` clean) both before and after.
+
+**Root cause, traced one level deeper than the pivot already fixed**: `analyzer.py`'s real
+`.cs`-usage-site detection (`b25eda5`) only scans `.cs` files for incompatible-API references --
+it has no equivalent scan of `.cshtml` Razor views, so when a view actually uses a
+System.Web.Mvc-specific helper, nothing ever surfaces that file as evidence, and `plangen_llm`
+(which only ever sees analyzer findings) has no way to know it needs to be in phase-3's scope.
+This is the exact same shape of gap as Phase F's *original* gap 1, recurring in a file type the
+first fix didn't cover -- real, evidence-earned, and squarely a knowledge-pack-side gap under the
+pivot's own boundary decision (audit generation is external to this project), not a control-plane
+bug. Total live-API spend across the whole third-run sequence: ~$0.65.
+
+**Decision, asked of the user directly rather than assumed**: extend the analyzer's usage-site
+detection to `.cshtml` now and retry phase 3, hand-widen the plan's scope and retry, or stop here
+and document. **User chose: stop here, document as-is.** Three real, load-bearing bugs found and
+fixed in the control plane itself this session (placeholder formatting, check-set visibility, edit
+deletion semantics) are the actual yield of this run, plus confirmation that two real phases can
+now complete successfully end-to-end under the fully dynamic design, plus one more piece of
+real, specific evidence (not a checklist item) for where the knowledge pack's analyzer still has a
+blind spot -- consistent with this project's own rule that new work should be earned by evidence,
+not derived preemptively.
+
+**What remains exactly as built, untouched by this run's fixes**: `INTEGRITY-3`'s scope
+enforcement (this run is itself proof it still works, unmodified, under fully dynamic
+scope/checks); `QA-2`'s exit-code-only verdict derivation (the phase-2 escalation was governed by
+a real subprocess exit code the whole way through, never a model's self-report); `EXEC-3`'s
+bounded retry with `INTEGRITY-8` file-only reset between attempts (visible working correctly in
+the diagnostic log across every attempt of every phase).
+
+**State after this entry**: `controlplane/runner.py`, `llm_implementer.py`,
+`tests/test_llm_implementer.py`, `tests/test_runner_llm.py` modified; new
+`tests/test_check_placeholders.py`. Not yet committed as of this entry. Four run directories
+(`alloy-pivot-run3`, `-run3b`, `-run3c`, `-run3d`) exist under `.scratch/runs/` (gitignored) as
+the evidence trail for this entry; not cleaned up, left as inspectable history the same way every
+prior real run's scratch state has been.
+
+**To resume cold**: read this entry, then decide whether to extend `analyzer.py`'s usage-site
+detection to `.cshtml` (a knowledge-pack-side, evidence-earned fix, next in line if a fourth
+real run is wanted) or move to other open work (`IMPLEMENTATION-PLAN.md` Phase B's remaining
+spikes). The self-test-tool idea from earlier in this entry (letting the implementer dry-run its
+own draft against its checks before finalizing) is still a live, reasoned-through option for a
+*different* class of failure than what actually recurred this run -- worth returning to with its
+own fresh evidence, not bolted on speculatively.

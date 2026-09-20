@@ -156,6 +156,69 @@ class RunnerLlmTests(unittest.TestCase):
         self.assertEqual(escalated[0]["category"], "budget-exceeded")
         self.assertEqual(mock.tool_calls_log, [])  # the wrapper must refuse before ever calling the model
 
+    def test_phase_specific_check_set_is_shown_to_the_implementer_not_just_the_plan_default(self):
+        """Regression for a real bug found live during Phase F's third run, 2026-09-20:
+        _apply_llm_edits always showed the model the plan's default check_set, never a phase's
+        own PLAN-5 check set override -- so a phase could be judged by a check it was never told
+        about. Here the phase's own check set is deliberately different from the plan default;
+        the model's prompt must reflect the phase-specific one, since that's what actually runs."""
+        (self.fixture / "greeting.txt").write_text("hello", encoding="utf-8")
+        plan = {
+            "schema_version": "0.1",
+            "run_id_prefix": "llm-test",
+            "plan_description": "test",
+            "check_set": [{
+                "id": "default-check",
+                "command": [sys.executable, "-c", CHECK_SCRIPT],
+                "result_artifact": str(Path(self._tmp.name) / "unused.xml"),
+                "result_format": "junit",
+            }],
+            "phases": [{
+                "id": "phase-1",
+                "description": "set greeting.txt to 'hello world'",
+                "declared_scope": ["greeting.txt"],
+                "side_effect_class": "file-only",
+                "edits": [],
+                "checks": [{
+                    "id": "phase-specific-check",
+                    "command": [sys.executable, "-c", "import sys; sys.exit(0)"],
+                    "result_artifact": str(Path(self._tmp.name) / "phase-specific-unused.xml"),
+                    "result_format": "junit",
+                }],
+            }],
+        }
+        plan_path = Path(self._tmp.name) / "plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+        mock = MockModelProvider(responses=[_finalize([{"path": "greeting.txt", "content": "hello world"}])])
+        budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
+        runner = self._runner(plan_path, budgeted)
+
+        self.assertTrue(runner.run())
+        user_prompt = mock.tool_calls_log[0][1]["content"]
+        self.assertIn("import sys; sys.exit(0)", user_prompt)  # the phase-specific check command
+
+    def test_llm_proposed_deletion_actually_removes_the_file_and_commits_cleanly(self):
+        """Regression for the real crash found live, Phase F's third run, 2026-09-20: an edit
+        with content=None must delete the file, not crash trying to write None as text."""
+        plan_path = self._write_plan("hello world")  # baseline already passes; phase must delete, not edit
+        mock = MockModelProvider(responses=[_finalize([{"path": "greeting.txt", "content": None}])])
+        budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        # this phase's own check just confirms the file is gone, so a real deletion is required
+        # to pass -- not merely tolerated
+        plan["phases"][0]["checks"] = [{
+            "id": "file-deleted",
+            "command": [sys.executable, "-c", "import pathlib, sys; sys.exit(0 if not pathlib.Path('greeting.txt').exists() else 1)"],
+            "result_artifact": str(Path(self._tmp.name) / "deleted-unused.xml"),
+            "result_format": "junit",
+        }]
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        runner = self._runner(plan_path, budgeted)
+
+        self.assertTrue(runner.run())
+        self.assertFalse((runner.target_repo / "greeting.txt").exists())
+
     def test_budget_overage_detected_after_a_call_that_used_more_than_requested(self):
         """The complementary case: a small-but-nonzero phase budget permits a capped call, and
         the wrapper still catches the overage once real usage comes back, rather than trusting

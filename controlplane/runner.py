@@ -87,6 +87,19 @@ class Runner:
 
     # ---- check set ---------------------------------------------------------------
 
+    @staticmethod
+    def _substitute_placeholders(text: str, **values: str) -> str:
+        """Replaces only the plan's known {run_dir}/{phase_id}/{result_artifact} placeholder
+        tokens via literal substring replacement -- never str.format(), which interprets every
+        brace in the string. A check's command can be an arbitrary script (model-authored, since
+        the 2026-09-20 pivot), and ordinary code legitimately contains braces that aren't plan
+        placeholders (e.g. Python's `tag.rsplit('}', 1)` for stripping an XML namespace) --
+        str.format() raised ValueError on exactly that, live, the first time a generated check
+        happened to contain one."""
+        for key, value in values.items():
+            text = text.replace("{" + key + "}", value)
+        return text
+
     def _run_check_set(self, phase_id: str, checks: list | None = None) -> list[CheckResult]:
         """EXEC-10: checks never run in the implementer's own working directory. Before each
         check set, the verifier's independent worktree is moved (detached) to whatever commit
@@ -102,9 +115,9 @@ class Runner:
 
         results = []
         for check in checks:
-            artifact = Path(check.result_artifact.format(run_dir=str(self.run_dir), phase_id=phase_id))
+            artifact = Path(self._substitute_placeholders(check.result_artifact, run_dir=str(self.run_dir), phase_id=phase_id))
             command = [
-                part.format(run_dir=str(self.run_dir), phase_id=phase_id, result_artifact=str(artifact))
+                self._substitute_placeholders(part, run_dir=str(self.run_dir), phase_id=phase_id, result_artifact=str(artifact))
                 for part in check.command
             ]
             self.diag_log.write(f"phase={phase_id} check={check.id} command={command}")
@@ -138,7 +151,14 @@ class Runner:
         model proposes them. Whatever it returns is written and committed as-is -- EXEC-2:
         detection (INTEGRITY-3's post-commit scope diff) is the enforcement mechanism, not
         pre-filtering what the model is allowed to propose."""
-        check_commands = [c.command for c in self.plan.check_set]
+        # PLAN-5: a phase's own check set (e.g. a model-authored check proving its specific
+        # remediation happened) overrides the plan default, exactly as _run_check_set resolves
+        # it -- the implementer must be told about the SAME checks that will actually verify it,
+        # not always the plan's default. Telling it about only "dotnet build" while a
+        # phase-specific check silently governs the real verdict is how a phase can fail a check
+        # it was never even told existed (found live, Phase F's third run, 2026-09-20).
+        effective_checks = phase.checks if phase.checks is not None else self.plan.check_set
+        check_commands = [c.command for c in effective_checks]
         result = request_edits(
             self.model_provider,
             phase.description,
@@ -149,11 +169,23 @@ class Runner:
             prior_failure_feedback=prior_failure_feedback,
             max_tool_rounds=self.llm_max_tool_rounds,
         )
+        deleted = []
         for edit in result.edits:
             dest = self.target_repo / edit.path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(edit.content, encoding="utf-8")
-        self.diag_log.write(f"phase={phase.id} LLM proposed edits to: {[e.path for e in result.edits]}")
+            if edit.content is None:
+                # A real gap found live, Phase F's third run, 2026-09-20: the model correctly
+                # identified a file needed to be deleted (a check demanded its absence) but had
+                # no way to say so, and content=None crashed str.write_text. finalize_edits now
+                # documents null content as an explicit delete instruction.
+                dest.unlink(missing_ok=True)
+                deleted.append(edit.path)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(edit.content, encoding="utf-8")
+        self.diag_log.write(
+            f"phase={phase.id} LLM proposed edits to: {[e.path for e in result.edits if e.content is not None]}"
+            + (f"; deleted: {deleted}" if deleted else "")
+        )
         return result.input_tokens, result.output_tokens
 
     @staticmethod

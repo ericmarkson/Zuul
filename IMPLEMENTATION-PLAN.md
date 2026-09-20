@@ -272,7 +272,7 @@ pass the same day once the rest of the phase was live-verified.
   `_runner_*` files drive `Runner` itself, not just the isolated pieces, through
   `MockModelProvider` and a real simulated crash).
 
-## Phase F — Real-repo validation — *was Phase 8* — **first run done, 2026-09-20; gaps found, not yet fixed**
+## Phase F — Real-repo validation — *was Phase 8* — **third run done, 2026-09-20 — two phases genuinely succeed under the dynamic design**
 **Goal**: run the whole thing against a real .NET Framework codebase and see what breaks.
 - Validate all 14 of FRD §6's v1 acceptance criteria.
 - Expect FRD §10's open issues (git hooks, context-window limits, flaky checks, private feeds)
@@ -302,6 +302,52 @@ Not yet resolved: whether/how to fix declared-scope generation for `incompatible
 whether a new requirement (something checking a phase actually did what it claimed, independent
 of build success) is warranted. Per this project's own rule, this is earned evidence, not a
 checklist item — the next FRD change here should be scoped to exactly these two findings.
+
+**Third run, 2026-09-20, after the architectural pivot landed — the first run against real
+remediation content produced by the dynamic (non-template) design.** Full detail in
+`logs/session-log.md`'s "Phase F, third run" entry. Three real control-plane bugs found and
+fixed along the way, all now covered by regression tests (98/98 hermetic tests pass):
+1. `runner.py`'s `_run_check_set` called `str.format()` on a check's entire command, including
+   the script text itself — a model-authored check can legitimately contain a brace that isn't a
+   `{run_dir}`-style placeholder (e.g. `tag.rsplit('}', 1)`), and `.format()` crashed on it.
+   Fixed with literal substring replacement (`Runner._substitute_placeholders`) instead of the
+   format mini-language.
+2. `_apply_llm_edits` always showed the implementer the **plan's default check set**, never a
+   phase's own `PLAN-5` override — so a phase could be judged by a check (`gpt-5.6-sol` never
+   even knew `verify-package-reference-migration` existed) while its prompt only listed
+   `dotnet build`. Fixed to resolve `phase.checks if phase.checks is not None else
+   self.plan.check_set`, the same resolution `_run_check_set` already used for the real verdict.
+3. The model tried to signal "delete this file" with `content: null`, since packages.config
+   genuinely needed deleting and nothing in the schema supported that — `write_text(None, ...)`
+   crashed. `finalize_edits` now explicitly documents `content: null` as a delete instruction;
+   `runner.py` unlinks the file instead of writing it.
+
+**Net result after all three fixes**: phase 1 (SDK retarget) and **phase 2
+(packages.config → PackageReference) both succeeded for real** — the same phase that escalated
+twice before now genuinely deletes `packages.config` and writes correct `PackageReference`
+entries with real package versions. Phase 3 (`replace-incompatible-api`) escalated on a
+**legitimate `INTEGRITY-3` scope-conflict**, not a bug: the model tried to touch 2 Razor
+`.cshtml` views and 5 config files outside its declared scope. Root cause traced one level
+deeper than the pivot's own headline fix: `analyzer.py`'s real `.cs`-usage-site detection
+(`b25eda5`) has no `.cshtml` equivalent, so a view using a System.Web.Mvc-specific helper never
+becomes evidence the plan generator can see. This is a knowledge-pack-side gap under the pivot's
+own external-boundary decision, not a control-plane bug, and the run halted fail-closed exactly
+as designed — real repo confirmed untouched. Asked the user directly how to proceed (extend the
+analyzer now, hand-widen scope, or stop and document); **user chose to stop and document**, per
+this project's own evidence-earned-not-preemptive rule. Total live spend across the full
+third-run sequence: ~$0.65.
+
+**A design conversation along the way, worth preserving**: after phase 2's second escalation
+(before bug 2/3 above were found), the user's instinct was that this pointed to a missing
+architectural layer — "some level of 'researcher' to inspect and assess the wider range of
+actions" — rather than something to prompt-tune away. Investigating before agreeing led to
+finding bug 2 instead: the model wasn't missing broad context, it was being judged by a specific
+check it was never told existed. Once that was fixed (and bug 3 alongside it), the phase
+succeeded outright, without needing any heavier "researcher" layer. The heavier idea floated in
+that conversation — giving the implementer a tool to dry-run its own draft against its checks
+before finalizing, catching self-inconsistency before spending a whole commit-and-verify round
+trip — is still a reasoned, live option, but for a different class of failure than the one that
+actually recurred; deliberately not built speculatively, per this project's own rule.
 
 ---
 

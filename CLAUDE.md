@@ -36,19 +36,32 @@ was updated to match.
 
 **Credentials**: a real OpenAI API key is configured in `.env` (gitignored, never committed) for `gpt-5.6-sol`. `python -m controlplane.cli run --model-provider openai` uses it; omit that flag for the scripted/no-LLM path. Treat the key as live and billable — it has already made real, if cheap (~$0.03 so far total), API calls.
 
-## ✅ ARCHITECTURAL PIVOT BUILT, 2026-09-20 (same day as the section below was written)
+## ✅ ARCHITECTURAL PIVOT BUILT AND PROVEN, 2026-09-20 (same day as the section below was written)
 
 The redesign this section called for is now built: `controlplane/plangen_llm.py` (LLM-driven
 plan generation, replacing the deleted node-template catalogue) and `llm_implementer.py`'s
 bounded multi-step tool-calling loop (`complete_with_tools`, `read_file`/`list_directory`,
 `finalize_edits`). Both are live-verified against the real API, not just hermetically tested —
 see the 2026-09-20 "pivot built" decision-log entry below for the concrete evidence, including
-two real bugs found and fixed the moment each path first touched the real API. 90/90 hermetic
-tests pass. The templates-as-few-shot-context question below is resolved: **dropped entirely**,
-per the user's own instinct that keeping them risked the model re-learning the exact failure
-modes Phase F found — see the decision log for the fuller argument. The section immediately
-below is kept as-written (not edited down) for the historical record of what was decided and why;
-treat "not yet built" language in it as superseded by this note.
+two real bugs found and fixed the moment each path first touched the real API. The
+templates-as-few-shot-context question below is resolved: **dropped entirely**, per the user's
+own instinct that keeping them risked the model re-learning the exact failure modes Phase F
+found — see the decision log for the fuller argument.
+
+**Then proven against the real target, Phase F's third run, same day.** Two real phases
+(SDK retarget, packages.config→PackageReference) completed genuinely successfully end to end for
+the first time under the fully dynamic design — the packages.config phase is the exact one that
+had escalated twice before. Three more real control-plane bugs found and fixed along the way
+(check-command placeholder formatting crashing on a model-authored script's own braces; the
+implementer being shown the plan's default check set instead of the phase's actual one; no
+schema support for the model to signal file deletion). Phase 3 then hit a legitimate
+`INTEGRITY-3` scope-conflict escalation traced to a real, one-level-deeper gap in
+`analyzer.py` (no `.cshtml` usage-site detection, only `.cs`) — a knowledge-pack-side finding,
+correctly halted fail-closed, not a control-plane bug. 98/98 hermetic tests pass. Full detail in
+the 2026-09-20 "Phase F, third run" decision-log entry below and `logs/session-log.md`.
+
+The section immediately below is kept as-written (not edited down) for the historical record of
+what was decided and why; treat "not yet built" language in it as superseded by this note.
 
 ## ⚠ ARCHITECTURAL PIVOT IN PROGRESS, 2026-09-20 — read this before touching Phase D or E (historical — see "PIVOT BUILT" above)
 
@@ -121,17 +134,28 @@ template to it.
 3. ~~Extend `llm_implementer.py` for a bounded multi-step tool-calling loop...~~ **done —
    `complete_with_tools` + `read_file`/`list_directory`/`finalize_edits`.**
 4. ~~Resolve the templates-as-context open question above.~~ **done — dropped entirely.**
-5. **Partially done.** Plan generation was re-run for real against the real `alloy-mvc-template`
-   audit (~$0.09) and produced concrete evidence the redesign fixes both of Phase F's original
-   gaps (see the decision-log entry). The implementer's tool-calling loop was live-verified
-   against the real API on the **safe synthetic fixture only** (~$0.03) — not yet run against
-   real remediation content for all 4 real phases end-to-end (a genuine "Phase F, third run").
-   That full run is real money and real time (the first two Phase F attempts cost ~$0.28 and
-   ~$0.03 respectively) and produces large diffs to review — a natural point to check with the
-   user before spending it, rather than assumed as this session's next automatic step.
-6. Only after that: finish `IMPLEMENTATION-PLAN.md` Phase B (B1 `ENV-5` spike, B2 private
+5. ~~Re-run Phase F a third time...~~ **done.** Two phases (SDK retarget,
+   packages.config→PackageReference) genuinely succeeded end-to-end for the first time under the
+   dynamic design; three more real control-plane bugs found and fixed along the way
+   (check-command placeholder formatting, check-set visibility to the implementer, edit-deletion
+   semantics); phase 3 escalated on a legitimate scope conflict traced to a real knowledge-pack
+   gap (`analyzer.py` has no `.cshtml` usage-site detection). Full detail in the "Phase F, third
+   run" decision-log entry and `logs/session-log.md`. **User chose to stop and document rather
+   than chase the `.cshtml` gap immediately** — see next steps below.
+6. **Next, if picked up**: extending `analyzer.py`'s usage-site detection to `.cshtml` Razor
+   views (mirrors the existing real `.cs` detection from `b25eda5`) is the natural,
+   evidence-earned next fix — it's what phase 3's escalation actually pointed at. Not started.
+7. **Also live, not yet built, and lower priority than #6**: a self-test tool for the
+   implementer's tool-calling loop (dry-run the phase's own check against its uncommitted draft
+   before calling `finalize_edits`, informational only — `QA-2`'s real verdict still only comes
+   from the independent post-commit verifier run). Floated during the third-run debugging as the
+   right-shaped answer to "give the implementer more assessment ability," but deliberately not
+   built speculatively — the failure that prompted the idea turned out to have a narrower root
+   cause (check invisibility, now fixed). Worth returning to only with fresh evidence that the
+   model, correctly informed about its checks, still can't satisfy them.
+8. Only after that: finish `IMPLEMENTATION-PLAN.md` Phase B (B1 `ENV-5` spike, B2 private
    feeds) — independent, lower priority than the pivot above.
-7. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6) — still bears on
+9. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6) — still bears on
    `ENV-3/4`/`TELEMETRY-*`/`PROVIDER-*`, all v2/won't-do, and now also plausibly relevant to the
    agentic-implementer redesign in point 3 above (multi-agent/tool-calling support) — worth a
    fresh look through that lens specifically, not just the original one.
@@ -197,6 +221,7 @@ Guardrails:
 - **2026-09-20** – **PHASE F, FIRST RUN — real findings, not a clean pass.** User confirmed `alloy-mvc-template`'s third-party disclosure eligibility explicitly (AskUserQuestion), after being shown "finish Phase E" and "start Phase F" were the same next action. Ran all 4 real audit-derived phases live against a scratch copy (original repo confirmed untouched after) with `gpt-5.6-sol`: ~$0.28, all 4 "committed and verified" — but `dotnet build` failed identically before and after every phase (no MSBuild in this environment), so verification had nothing to measure against. Reading the actual diffs (not trusting "OK"): phase-1 (SDK-style retarget) was genuinely good and grounded — spot-checked package versions matched the original file's literal `HintPath` strings, not hallucinated; phase-2 (packages.config migration) was good; **phase-3 (incompatible-api) could only delete `<Reference>` entries, since its declared scope excluded the actual `.cs` usage sites** — the only in-scope move was borderline harmful; **phase-4 (config modernization) deleted 543 lines across 5 config files and created none of the promised `appsettings.json` replacement** — a real "helpfully reforms the repository" failure (§5a's named threat) that the pipeline reported as verified, since `QA-5`'s delta check answers "did the build get worse," not "did this phase do what it claimed." Two real, evidence-earned gaps found and documented, neither fixed yet pending direction: incompatible-api scope generation needs real usage sites, and there's no requirement yet for detecting a phase that didn't do what it said. Full detail in `logs/session-log.md` and `IMPLEMENTATION-PLAN.md` Phase F.
 - **2026-09-20** – **ARCHITECTURAL PIVOT: dynamic (LLM-driven) plan generation + multi-step agentic implementer, replacing the fixed node-template catalogue.** User rejected the direct Phase F fix's shape (a hardcoded `expected_new_paths` field synthesizing a hardcoded check script) as building the wrong kind of system — the project should dynamically generate steps and runtime agents from an audit, not match findings against a fixed template catalogue. Boundary clarified: audit generation (Phase C/knowledge pack) is 100% external/mocked, not part of "our project," which starts at the audit and owns plan generation + agent execution + verification. Agreed redesign: (1) plan generation becomes one model call per finding-group proposing scope/side-effect-class/checks, still frozen at the same approval gate; (2) the per-phase implementer becomes a bounded multi-step tool-calling agent instead of one completion call; (3) verification stays deterministic — `QA-2` is explicitly non-negotiable, an LLM verdict must never be the pass/fail gate. Not yet built — session usage ran out. Full detail, including what's still reusable (`analyzer.py` usage-site detection, the new per-phase-checks schema capability) versus superseded (`plangen.py`'s template-matching path), in this file's "Next action" section above and in `logs/session-log.md`.
 - **2026-09-20** – **ARCHITECTURAL PIVOT BUILT, same day.** Templates-as-few-shot-context question resolved: **dropped entirely** — user's own instinct, confirmed by reasoning through it together, that keeping the four templates as "free" context risked the model re-learning the exact failure modes Phase F found (the incompatible-api template that could only delete `<Reference>` entries; the config template that deleted without replacing), contaminating the very evidence this pivot exists to produce. `knowledge-packs/dotnet-framework-to-core/templates/` deleted; `plangen.py`'s `load_templates` path replaced, not extended. **Point 1 built**: `controlplane/plangen_llm.py`, one `provider.complete()` call per finding-group proposing `side_effect_class`/description/`additional_scope`/checks (a model-authored Python script per check, still executed as a subprocess with exit code governing — `QA-2` untouched). **Point 2 built**: `llm_implementer.py`'s `request_edits` is now a bounded tool-calling loop via a new `ModelProvider.complete_with_tools` (`read_file`/`list_directory`, path-traversal-guarded, then a required `finalize_edits` call); `BudgetedProvider` wraps it with the same budget accounting as `complete()`. **Both live-validated against the real API, not just hermetically** (90/90 hermetic tests pass, up from 64): plan generation run for real against the real `alloy-mvc-template` audit (~$0.09) produced a phase-3 `declared_scope` that correctly includes the actual `.cs` usage-site files and a phase-4 that correctly proposes `appsettings.json` plus a check verifying it's valid JSON and the legacy configs are gone — concrete, unprompted evidence against both of Phase F's original gaps. The tool-calling implementer, run for real against the safe synthetic fixture (~$0.03), surfaced and fixed a real bug the instant it touched the real API: `gpt-5.6-sol`'s chat-completions endpoint rejects function tools combined with any non-`"none"` `reasoning_effort`. Full detail in `IMPLEMENTATION-PLAN.md`'s Phase D/E sections and `FRD.md` §14.
+- **2026-09-20** – **PHASE F, THIRD RUN — two phases genuinely succeed; three more real bugs found and fixed; one legitimate escalation.** Committed the pivot (`9378180`), then ran all 4 audit-derived phases live against a fresh scratch copy of the real `alloy-mvc-template` repo, `gpt-5.6-sol`. **Bug 1** (immediate crash): `runner.py` called `str.format()` on a check's entire command, including its own script text — a model-authored check legitimately containing a brace that isn't a `{run_dir}`-style placeholder (`tag.rsplit('}', 1)`) crashed it. Fixed with literal substring replacement instead of the format mini-language. Re-ran fresh: phase 1 succeeded, **phase 2 (packages.config→PackageReference) escalated after 3 attempts** — the model correctly converted every real package into `PackageReference` but never deleted `packages.config` despite its own description saying to twice; the model-authored check correctly caught this every time and the run halted fail-closed, not falsely "verified" — direct validation of Phase F's original gap-2 fix working live. **User pushed back on prompt-tuning this away**, framing it as a missing "researcher" layer rather than a wording problem. Investigated before agreeing: found **bug 2** — `_apply_llm_edits` always showed the model the plan's *default* check set, never the phase's own `PLAN-5` override, so the model's prompt never even mentioned the check that was actually failing it. Concluded together this was the more foundational bug, not evidence of a missing broad-research layer (the model already had the literal delete instruction in its own phase description) — fixed the check-visibility gap first, re-tested before considering anything heavier. Re-ran: phase 1 succeeded; phase 2 attempt 2, now aware of the check, tried `content: null` to mean "delete this file" — **bug 3**, a crash, since the schema had no deletion semantics; very likely the true root cause of bug 2's original failure. Fixed: `finalize_edits` now explicitly documents and supports `content: null` as a delete instruction. 98/98 hermetic tests pass (all three bugs regression-tested). **Fourth run: phase 1 and phase 2 both succeeded for real** — `packages.config` genuinely deleted, real `PackageReference` entries confirmed. **Phase 3 escalated on a legitimate `INTEGRITY-3` scope-conflict**, traced to a real gap one level deeper than the pivot's headline fix: `analyzer.py`'s `.cs`-usage-site detection (`b25eda5`) has no `.cshtml` equivalent, so a Razor view using a System.Web.Mvc helper never becomes evidence the plan generator can see — a knowledge-pack-side finding, not a control-plane bug, correctly halted rather than silently overreaching. Real repo confirmed untouched throughout. Total live spend: ~$0.65. Asked the user how to proceed (extend the analyzer, hand-widen scope, or stop and document); **user chose stop and document**, per this project's evidence-earned-not-preemptive rule. Full detail in `IMPLEMENTATION-PLAN.md`'s Phase F section and `logs/session-log.md`.
 
 ## Key references
 - `FRD.md` (this repo) – **the primary spec.** Tool-agnostic functional requirements, each tagged **[v1] / [v2] / [won't-do]**. §5 threat model, §7 out of scope, §8 spikes to run, §9 traceability, §10 known open issues, §11 what the rightsizing cut and why.

@@ -73,6 +73,21 @@ class LlmImplementerTests(unittest.TestCase):
         with self.assertRaises(MalformedResponse):
             request_edits(mock, "d", ["a.py"], self.repo, [], max_output_tokens=100)
 
+    def test_null_content_parses_as_a_deletion_marker_not_malformed(self):
+        """Regression: a real bug found live during Phase F's third run, 2026-09-20 -- the model
+        correctly wanted to delete a file a check demanded be absent, submitted content=null, and
+        the old code path crashed downstream trying to write None as file content. Null content
+        is now an explicit, documented deletion instruction, not an error."""
+        mock = MockModelProvider(responses=[_finalize([{"path": "packages.config", "content": None}])])
+        result = request_edits(mock, "d", ["packages.config"], self.repo, [], max_output_tokens=100)
+        self.assertEqual(result.edits[0].path, "packages.config")
+        self.assertIsNone(result.edits[0].content)
+
+    def test_non_string_non_null_content_raises_malformed(self):
+        mock = MockModelProvider(responses=[_finalize([{"path": "a.py", "content": 42}])])
+        with self.assertRaises(MalformedResponse):
+            request_edits(mock, "d", ["a.py"], self.repo, [], max_output_tokens=100)
+
     def test_prompt_includes_existing_file_content(self):
         (self.repo / "a.py").write_text("original content", encoding="utf-8")
         mock = MockModelProvider(responses=[_finalize([{"path": "a.py", "content": "new"}])])
