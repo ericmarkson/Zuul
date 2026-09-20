@@ -18,6 +18,8 @@ class CheckResult:
     exit_code: int | None
     test_outcomes: dict[str, str] = field(default_factory=dict)  # test name -> Passed/Failed
     not_run_reason: str | None = None
+    stdout: str = ""
+    stderr: str = ""
 
     @property
     def failed_tests(self) -> set[str]:
@@ -26,6 +28,9 @@ class CheckResult:
     @property
     def not_run(self) -> bool:
         return self.not_run_reason is not None
+
+    # stdout/stderr are captured for commentary only (e.g. LLM retry feedback, DIAG-1) --
+    # nothing in this module or is_regression() below ever reads them for pass/fail. QA-2.
 
 
 def run_check(cwd: Path, check_id: str, command: list[str], result_artifact: Path, result_format: str) -> CheckResult:
@@ -48,7 +53,10 @@ def run_check(cwd: Path, check_id: str, command: list[str], result_artifact: Pat
     if proc.returncode != 0 and not any(outcome != "Passed" for outcome in outcomes.values()):
         outcomes = {**outcomes, "__process_exit__": "Failed"}
 
-    return CheckResult(check_id=check_id, exit_code=proc.returncode, test_outcomes=outcomes)
+    return CheckResult(
+        check_id=check_id, exit_code=proc.returncode, test_outcomes=outcomes,
+        stdout=proc.stdout, stderr=proc.stderr,
+    )
 
 
 def _parse_result_artifact(path: Path, result_format: str) -> dict[str, str]:

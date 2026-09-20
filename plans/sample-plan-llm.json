@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.1",
+  "run_id_prefix": "sample-dotnet-app-llm",
+  "plan_description": "Phase E smoke test: the same two legitimate remediations plans/sample-plan.json hand-authors as literal edits, but with edits left empty so a real model (gpt-5.6-sol) has to generate them. Deliberately targets the safe synthetic fixture, not the real stretch-goal repo -- this is the first live-model run in the project and should be validated small before spending real tokens on anything bigger.",
+  "check_set": [
+    {
+      "id": "unit-tests",
+      "command": ["dotnet", "run", "--project", "tests/SampleApp.Tests/SampleApp.Tests.csproj", "--", "--result", "{result_artifact}"],
+      "result_artifact": "{run_dir}/results/{phase_id}/results.xml",
+      "result_format": "junit"
+    }
+  ],
+  "phases": [
+    {
+      "id": "phase-1-guard-divide-by-zero",
+      "description": "Add a guard clause so Calculator.Divide throws ArgumentException on a zero divisor instead of silently returning Infinity. Do not change Add, Subtract, or any other method.",
+      "declared_scope": ["src/SampleApp/Calculator.cs"],
+      "side_effect_class": "file-only",
+      "edits": []
+    },
+    {
+      "id": "phase-2-add-multiply",
+      "description": "Add a Calculator.Multiply(double a, double b) method that returns a * b, and add a corresponding test named Multiply_ReturnsProduct to the existing test runner (tests/SampleApp.Tests/Program.cs) that asserts Multiply(4, 5) == 20, following the exact same RunTest(...) pattern already used by the other tests in that file. Do not remove or change any existing tests.",
+      "declared_scope": ["src/SampleApp/Calculator.cs", "tests/SampleApp.Tests/Program.cs"],
+      "side_effect_class": "file-only",
+      "edits": []
+    }
+  ]
+}

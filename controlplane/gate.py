@@ -7,7 +7,7 @@ from controlplane.checks import CheckResult
 from controlplane.plan import Plan
 from controlplane.secrets_scan import SecretFinding
 
-DISCLOSURE_POLICY = """\
+_DISCLOSURE_POLICY_BASE = """\
 Third-party data-disclosure policy (FRD DISCLOSE-1):
   Sent to a model provider, when one is used:
     the contents of files within the active phase's declared scope, the plan and phase
@@ -18,9 +18,16 @@ Third-party data-disclosure policy (FRD DISCLOSE-1):
   Operator responsibility:
     confirm this repository is eligible for third-party disclosure under your organization's
     policy, confirm the provider's data-retention/training-use terms before configuring it, and
-    do not run this system against a repository containing live secrets.
-  This run: no third-party model provider is used. The implementer is a scripted, deterministic
-    edit set checked into fixtures/sample-dotnet-app-edits/ (Phase A, no LLM in the loop)."""
+    do not run this system against a repository containing live secrets."""
+
+
+def _disclosure_policy_text(model_in_use: bool, model_name: str | None) -> str:
+    if model_in_use:
+        run_note = f"  This run: a third-party model provider IS in use for phases with no pre-authored edits (model: {model_name})."
+    else:
+        run_note = ("  This run: no third-party model provider is used. Every phase's edits are "
+                    "pre-authored/scripted (no LLM in the loop).")
+    return f"{_DISCLOSURE_POLICY_BASE}\n{run_note}"
 
 
 def present_secret_findings(findings: list[SecretFinding]) -> None:
@@ -46,7 +53,7 @@ def require_secret_acknowledgment(findings: list[SecretFinding], auto_approve: b
     return answer == "y"
 
 
-def present_gate(plan: Plan, baseline_sha: str, baseline_results: list[CheckResult]) -> None:
+def present_gate(plan: Plan, baseline_sha: str, baseline_results: list[CheckResult], model_in_use: bool = False, model_name: str | None = None) -> None:
     print("=" * 70)
     print("APPROVAL CHECKPOINT (APPROVAL-1)")
     print("=" * 70)
@@ -65,7 +72,7 @@ def present_gate(plan: Plan, baseline_sha: str, baseline_results: list[CheckResu
         status = "no failures" if not failed else f"{len(failed)} pre-existing failure(s): {failed}"
         print(f"  - {result.check_id}: exit={result.exit_code}, {status}")
     print()
-    print(DISCLOSURE_POLICY)
+    print(_disclosure_policy_text(model_in_use, model_name))
     print("-" * 70)
 
 

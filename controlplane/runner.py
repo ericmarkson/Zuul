@@ -19,16 +19,31 @@ from controlplane.gate import (
     present_secret_findings,
     require_secret_acknowledgment,
 )
+from controlplane.llm_implementer import MalformedResponse, request_edits
+from controlplane.model_provider import BudgetedProvider, BudgetExceeded
 from controlplane.plan import Plan, load_plan
 from controlplane.secrets_scan import scan as scan_secrets
 
 
 class Runner:
-    def __init__(self, plan_path: Path, fixture_template: Path, edits_dir: Path, scratch_root: Path, auto_approve: bool = False):
+    def __init__(
+        self,
+        plan_path: Path,
+        fixture_template: Path,
+        edits_dir: Path,
+        scratch_root: Path,
+        auto_approve: bool = False,
+        model_provider: BudgetedProvider | None = None,
+        retry_budget: int = 2,
+        llm_max_output_tokens: int = 8000,
+    ):
         self.plan: Plan = load_plan(plan_path)
         self.fixture_template = fixture_template
         self.edits_dir = edits_dir
         self.auto_approve = auto_approve
+        self.model_provider = model_provider
+        self.retry_budget = retry_budget
+        self.llm_max_output_tokens = llm_max_output_tokens
         self.run_id = f"{self.plan.run_id_prefix}-{uuid.uuid4().hex[:8]}"
         self.run_dir = scratch_root / "runs" / self.run_id
         self.target_repo = self.run_dir / "target"
@@ -104,6 +119,28 @@ class Runner:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
+    def _apply_llm_edits(self, phase, prior_failure_feedback: str | None) -> tuple[int, int]:
+        """Phase E: no pre-authored edits exist for this phase (the audit-derived path), so the
+        model proposes them. Whatever it returns is written and committed as-is -- EXEC-2:
+        detection (INTEGRITY-3's post-commit scope diff) is the enforcement mechanism, not
+        pre-filtering what the model is allowed to propose."""
+        check_commands = [c.command for c in self.plan.check_set]
+        result = request_edits(
+            self.model_provider,
+            phase.description,
+            phase.declared_scope,
+            self.target_repo,
+            check_commands,
+            max_output_tokens=self.llm_max_output_tokens,
+            prior_failure_feedback=prior_failure_feedback,
+        )
+        for edit in result.edits:
+            dest = self.target_repo / edit.path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(edit.content, encoding="utf-8")
+        self.diag_log.write(f"phase={phase.id} LLM proposed edits to: {[e.path for e in result.edits]}")
+        return result.input_tokens, result.output_tokens
+
     @staticmethod
     def _scope_violations(phase, changed: list[str]) -> list[str]:
         return [
@@ -111,6 +148,113 @@ class Runner:
             for path in changed
             if not any(fnmatch.fnmatch(path, pattern) for pattern in phase.declared_scope)
         ]
+
+    @staticmethod
+    def _build_failure_feedback(phase_results: list[CheckResult], baseline_by_check: dict) -> str:
+        lines = []
+        for r in phase_results:
+            baseline = baseline_by_check.get(r.check_id)
+            new_failures = sorted(r.failed_tests - baseline.failed_tests) if baseline else sorted(r.failed_tests)
+            lines.append(f"check '{r.check_id}': exit_code={r.exit_code}, new_failures={new_failures}")
+            excerpt = (r.stdout[-1500:] + "\n" + r.stderr[-1500:]).strip()
+            if excerpt:
+                lines.append(f"output excerpt:\n{excerpt}")
+        return "\n".join(lines)
+
+    def _execute_phase(self, phase, baseline_by_check: dict) -> bool:
+        """EXEC-3: bounded retry budget per phase. A retry re-runs the implementer step (LLM
+        path only -- a scripted phase is deterministic, so a retry would reproduce the same
+        result and is skipped) after an INTEGRITY-8 file-only baseline reset back to the
+        phase's own pre-attempt commit. Scope violations are never retried -- they escalate
+        immediately, fail closed, exactly as in Phase A/D. Budget overruns are never retried
+        either -- BUDGET-2 requires an immediate halt."""
+        self.event_log.append(EventType.PHASE_STARTED, phase_id=phase.id)
+        pre_sha = gitops.head(self.target_repo)
+        cumulative_input_tokens = 0
+        cumulative_output_tokens = 0
+
+        if self.model_provider and not phase.edits:
+            self.model_provider.start_phase()
+
+        prior_failure_feedback = None
+        attempt = 0
+        while True:
+            attempt += 1
+            if attempt > 1:
+                gitops.git(self.target_repo, "reset", "--hard", pre_sha)
+                self.diag_log.write(f"phase={phase.id} attempt={attempt}: reset to pre-attempt baseline {pre_sha}")
+
+            if phase.edits:
+                self._apply_edits(phase)
+            else:
+                try:
+                    in_toks, out_toks = self._apply_llm_edits(phase, prior_failure_feedback)
+                    cumulative_input_tokens += in_toks
+                    cumulative_output_tokens += out_toks
+                except BudgetExceeded as e:
+                    self.event_log.append(EventType.BUDGET_EXCEEDED, phase_id=phase.id, kind=e.kind, limit=e.limit, actual=e.actual)
+                    self._escalate(
+                        phase.id, EscalationCategory.BUDGET_EXCEEDED,
+                        f"phase '{phase.id}' exceeded its {e.kind} budget: {e.actual} > {e.limit}",
+                        check_results=[], evidence={"kind": e.kind, "limit": e.limit, "actual": e.actual},
+                    )
+                    return False
+                except MalformedResponse as e:
+                    if attempt > self.retry_budget:
+                        self._escalate(
+                            phase.id, EscalationCategory.VALIDATION_LOOP,
+                            f"phase '{phase.id}' implementer produced unusable output after {attempt} attempt(s): {e}",
+                            check_results=[], evidence={"attempts": attempt, "last_error": str(e)},
+                        )
+                        return False
+                    prior_failure_feedback = f"Your previous response could not be used: {e}"
+                    self.diag_log.write(f"phase={phase.id} attempt={attempt}: malformed LLM response, retrying: {e}")
+                    continue
+
+            commit_sha = gitops.commit_all(self.target_repo, f"phase: {phase.id}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+            changed = gitops.changed_paths(self.target_repo, pre_sha, commit_sha)
+
+            violations = self._scope_violations(phase, changed)
+            if violations:
+                self.event_log.append(EventType.SCOPE_VIOLATION_DETECTED, phase_id=phase.id, violations=violations, changed=changed)
+                self._escalate(
+                    phase.id, EscalationCategory.SCOPE_CONFLICT,
+                    f"phase '{phase.id}' modified path(s) outside its declared scope: {violations}",
+                    check_results=[],
+                    evidence={"declared_scope": phase.declared_scope, "changed": changed, "violations": violations, "attempt": attempt},
+                )
+                return False
+
+            phase_results = self._run_check_set(phase.id)
+            regressions = [
+                r for r in phase_results
+                if r.check_id in baseline_by_check and is_regression(baseline_by_check[r.check_id], r)
+            ]
+            if regressions:
+                if attempt > self.retry_budget:
+                    self._escalate(
+                        phase.id, EscalationCategory.VALIDATION_LOOP,
+                        f"phase '{phase.id}' introduced check failures not present at baseline, after {attempt} attempt(s)",
+                        check_results=phase_results,
+                        evidence={
+                            "regressed_checks": [r.check_id for r in regressions],
+                            "new_failures": {r.check_id: sorted(r.failed_tests - baseline_by_check[r.check_id].failed_tests) for r in regressions},
+                            "attempts": attempt,
+                        },
+                    )
+                    return False
+                prior_failure_feedback = self._build_failure_feedback(phase_results, baseline_by_check)
+                self.diag_log.write(f"phase={phase.id} attempt={attempt}: check regression, retrying")
+                continue
+
+            self.event_log.append(
+                EventType.PHASE_COMMITTED, phase_id=phase.id, commit=commit_sha, attempts=attempt,
+                input_tokens=cumulative_input_tokens, output_tokens=cumulative_output_tokens,
+                run_tokens_total=self.model_provider.run_tokens_used if self.model_provider else 0,
+            )
+            self._sync_installgraph_dir(f"chore(installgraph): sync event log after phase '{phase.id}'")
+            print(f"[OK] Phase '{phase.id}' committed and verified ({commit_sha[:8]}, {attempt} attempt(s)).")
+            return True
 
     def _escalate(self, phase_id: str, category: EscalationCategory, summary: str, check_results: list[CheckResult], evidence: dict, compensating_action: str | None = None) -> None:
         self.event_log.append(EventType.ESCALATED, phase_id=phase_id, category=category.value, summary=summary)
@@ -180,7 +324,8 @@ class Runner:
         if not require_secret_acknowledgment(findings, auto_approve=self.auto_approve):
             return self._reject(branch, reason="secret_findings_not_acknowledged")
 
-        present_gate(self.plan, self.baseline_sha, baseline_results)
+        model_name = getattr(getattr(self.model_provider, "inner", None), "model", None) if self.model_provider else None
+        present_gate(self.plan, self.baseline_sha, baseline_results, model_in_use=self.model_provider is not None, model_name=model_name)
         self.event_log.append(EventType.GATE_PRESENTED)
         if not ask_approval(auto_approve=self.auto_approve):
             return self._reject(branch, reason="operator_declined")
@@ -190,46 +335,8 @@ class Runner:
 
         # Task 5 + 6: apply each phase, commit, scope-diff (fail closed), re-run checks as delta
         for phase in self.plan.phases:
-            self.event_log.append(EventType.PHASE_STARTED, phase_id=phase.id)
-            pre_sha = gitops.head(self.target_repo)
-
-            self._apply_edits(phase)
-            commit_sha = gitops.commit_all(self.target_repo, f"phase: {phase.id}")
-            changed = gitops.changed_paths(self.target_repo, pre_sha, commit_sha)
-
-            violations = self._scope_violations(phase, changed)
-            if violations:
-                self.event_log.append(EventType.SCOPE_VIOLATION_DETECTED, phase_id=phase.id, violations=violations, changed=changed)
-                self._escalate(
-                    phase.id,
-                    EscalationCategory.SCOPE_CONFLICT,
-                    f"phase '{phase.id}' modified path(s) outside its declared scope: {violations}",
-                    check_results=[],
-                    evidence={"declared_scope": phase.declared_scope, "changed": changed, "violations": violations},
-                )
+            if not self._execute_phase(phase, baseline_by_check):
                 return False
-
-            phase_results = self._run_check_set(phase.id)
-            regressions = [
-                r for r in phase_results
-                if r.check_id in baseline_by_check and is_regression(baseline_by_check[r.check_id], r)
-            ]
-            if regressions:
-                self._escalate(
-                    phase.id,
-                    EscalationCategory.VALIDATION_LOOP,
-                    f"phase '{phase.id}' introduced check failures not present at baseline",
-                    check_results=phase_results,
-                    evidence={
-                        "regressed_checks": [r.check_id for r in regressions],
-                        "new_failures": {r.check_id: sorted(r.failed_tests - baseline_by_check[r.check_id].failed_tests) for r in regressions},
-                    },
-                )
-                return False
-
-            self.event_log.append(EventType.PHASE_COMMITTED, phase_id=phase.id, commit=commit_sha)
-            self._sync_installgraph_dir(f"chore(installgraph): sync event log after phase '{phase.id}'")
-            print(f"[OK] Phase '{phase.id}' committed and verified ({commit_sha[:8]}).")
 
         self.event_log.append(EventType.RUN_COMPLETED, run_id=self.run_id)
         self._sync_installgraph_dir("chore(installgraph): run completed")

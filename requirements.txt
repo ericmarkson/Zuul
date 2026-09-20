@@ -1,0 +1,5 @@
+# Only controlplane/model_provider.py's OpenAIProvider needs this -- everything else in the
+# project (governance spine, knowledge pack, plan generation, all hermetic tests) is stdlib-only
+# by design (TEST-1). Phase E is the first thing in this project that legitimately needs a real
+# third-party dependency, because it's the first thing that talks to a real external API.
+openai>=3.16.2

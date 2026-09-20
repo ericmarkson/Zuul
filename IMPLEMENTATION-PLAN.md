@@ -160,21 +160,48 @@ generated plan's `_generated_from.dropped_informational_findings` field.
 - **Not built**: any actual remediation content. This was always Phase E's job, and the
   generator says so in every plan it produces (`plan_description` states this explicitly).
 
-## Phase E — Agentic implementer — *was Phase 4*
+## Phase E — Agentic implementer — *was Phase 4* — **mostly done, 2026-09-20**
 **Goal**: replace Phase A's scripted implementer with a model, and only that.
 
-Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `EXEC-7`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`,
-`DISCLOSE-1`, `TEST-1`.
+Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`, `DISCLOSE-1`,
+`TEST-1`. **`EXEC-7` (crash/resume) was deliberately not built in this pass** — it's a distinct
+concern (surviving process death mid-run) from replacing the implementer, and nothing in this
+phase's own work created a new reason to need it sooner. Tracked as still open below.
 
-- Single process, coordinator/implementer/verifier as roles. **The verifier gets no file-write
-  tools** (`EXEC-2`) — a configuration constraint, honestly labelled, with `INTEGRITY-3` as the
-  actual detection mechanism.
-- One provider, behind one `ModelProvider` interface. Budgets enforced in that wrapper, not
-  asked of the model.
-- Deterministic mock provider first (`TEST-1`), so the whole cycle is testable without tokens.
-- Pre-run secret scan surfaced at the gate with forced acknowledgment (`SECRET-1`).
-- **Exit criteria**: FRD §6 criteria 6, 9, 11, 13 pass; a full run completes against the Phase A
-  target repo with the model doing the edits.
+- `controlplane/model_provider.py`: `ModelProvider` protocol, `MockModelProvider` (`TEST-1`,
+  scripted responses/exceptions, zero network), `OpenAIProvider` (the only module that imports
+  the `openai` SDK), and `BudgetedProvider` — wraps either, enforces `BUDGET-1/2` per-phase and
+  per-run token ceilings and wall-clock limits, capping the outgoing request when it can and
+  still checking real usage afterward rather than trusting the cap was honored.
+- `controlplane/llm_implementer.py`: builds the prompt (phase description, declared scope,
+  current file contents, check commands, and prior-attempt failure feedback on retry) and
+  parses the model's JSON response into proposed full-file-content edits. Malformed responses
+  raise, they don't crash the run.
+- `controlplane/runner.py`: `_execute_phase` now owns an `EXEC-3` retry loop (bounded by
+  `retry_budget`, default 2) around whichever implementer produced no pre-authored edits.
+  Between attempts it does an `INTEGRITY-8` file-only `git reset --hard` to the phase's own
+  pre-attempt commit — a failed attempt never leaks into the next one. Scope violations and
+  budget overruns are never retried; both escalate immediately, fail closed, exactly like the
+  scripted path always has. `PHASE_COMMITTED` now records `attempts`, `input_tokens`, and
+  `output_tokens` per `EXEC-6`'s cumulative-usage requirement. `EXEC-2` is unaffected — the
+  model still gets no file-write tools of its own; the runner writes what it proposes and
+  `INTEGRITY-3`'s post-commit diff is still the actual enforcement.
+- **A real bug found and fixed while wiring this in**: `gate.py`'s disclosure-policy text had a
+  hardcoded "no third-party model provider is used" line from Phase A — a `DISCLOSE-1`
+  compliance bug the instant a real provider was configured. Now built from the run's actual
+  `model_in_use`/`model_name` state.
+- **Exit criteria**: FRD §6 criteria 6 (deterministic verdicts), 9 (budgets halt), and 13
+  (hermetic) pass. Criterion 11 (crash is legible, `EXEC-7`) does not yet — not attempted.
+  **A full run completed against the real model, model doing the edits**: `gpt-5.6-sol` via the
+  real OpenAI API, live, against the Phase A synthetic fixture (deliberately not the real
+  stretch-goal target on this first live run) — both phases succeeded on the first attempt, zero
+  retries needed, ~1500 input / ~1100 output tokens, ~$0.03. Generated code verified by hand
+  against `git diff`: a correct divide-by-zero guard and a correct `Multiply` method plus test,
+  following the existing code's own conventions, touching nothing outside declared scope.
+  47/47 hermetic tests pass (14 new: `test_model_provider.py`, `test_llm_implementer.py`,
+  `test_runner_llm.py` — the last of these drives `Runner` itself through `MockModelProvider`,
+  covering first-attempt success, malformed-response retry, retry-budget exhaustion, the
+  file-only reset between attempts, and both the pre-call and post-call budget-overrun paths).
 
 ## Phase F — Real-repo validation — *was Phase 8*
 **Goal**: run the whole thing against a real .NET Framework codebase and see what breaks.

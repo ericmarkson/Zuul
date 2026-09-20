@@ -1128,3 +1128,105 @@ run both test suites (`controlplane/tests` expect 23/23, the pack's `tests` expe
 either start Phase E (the agentic implementer — the first phase that needs an LLM provider
 credential, a decision only the user can make) or finish Phase B's B1 (`ENV-5` spike) / B2
 (private feeds), neither of which blocks Phase E.
+
+
+---
+
+### 2026-09-20 — Phase E: the agentic implementer, and the project's first live model call
+
+Same day, continuation after Phase D. User supplied a real OpenAI API key directly in chat and
+named "sol" as the model.
+
+**Handling the credential.** Before anything else: confirmed `.env`/`.env.*` were already
+gitignored (from the original scaffolding) and nothing credential-shaped was tracked or staged,
+then wrote the key to `.env` and added a tracked `.env.example` placeholder. Confirmed via
+`git check-ignore -v .env` that git actually ignores it. Flagged to the user once, briefly, that
+pasting a live key into chat is itself a disclosure channel outside this project's control, and
+that they might want to rotate it afterward — consistent with this project's own SECRET-1/
+DISCLOSE-1 design (advisory, not a filter; the operator decides, the system just surfaces).
+
+**Resolving "sol."** "gpt-5.6-sol" is not a model name in this assistant's training data. Rather
+than guess at its API shape (wrong assumptions here would either fail outright or silently
+misconfigure BUDGET-1's cost math), used WebSearch and WebFetch against OpenAI's own API docs to
+confirm the exact model identifier, that both Chat Completions and the Responses API are
+supported, and the reasoning_effort/response_format parameters the installed openai SDK
+(v3.16.2, freshly installed — the project's first real third-party dependency, recorded in a
+new requirements.txt) actually exposes. Ran a one-line live smoke test (a "PONG" round trip)
+before writing any real code, to catch an auth or naming problem for the cost of a few tokens
+rather than after building around a wrong assumption.
+
+**What was built**, scoped to IMPLEMENTATION-PLAN.md's Phase E ("replace Phase A's scripted
+implementer with a model, and only that"):
+- `controlplane/model_provider.py` — `ModelProvider` protocol; `MockModelProvider` (TEST-1,
+  scripted responses or exceptions, zero network — malformed payloads and injected timeouts are
+  just scripted outcomes, not special-cased branches); `OpenAIProvider` (the only module in the
+  project that imports the openai SDK); `BudgetedProvider`, wrapping either, enforcing
+  BUDGET-1/2's per-phase and per-run token ceilings and wall-clock limits — caps the outgoing
+  request when it can (capped_max_output <= 0 refuses before ever calling the model) and still
+  checks real usage after the call returns, rather than trusting the cap was honored.
+- `controlplane/llm_implementer.py` — builds the prompt (phase description, declared scope,
+  current contents of any in-scope files that already exist, the check commands that will run
+  afterward, and prior-attempt failure feedback on retry) and parses the model's JSON response
+  into proposed full-file-content edits. A malformed response raises MalformedResponse; it
+  does not crash the run.
+- `controlplane/runner.py` — `_execute_phase` rewritten around an EXEC-3 bounded retry loop
+  (default retry_budget=2) for whichever phases have no pre-authored edits. Between attempts,
+  an INTEGRITY-8 file-only `git reset --hard` to the phase's own pre-attempt commit — a failed
+  attempt never leaks into the next one, verified directly by a dedicated test. Scope violations
+  and BudgetExceeded are never retried; both escalate immediately, exactly as the scripted
+  path already did. PHASE_COMMITTED now records attempts, input_tokens, and output_tokens,
+  satisfying EXEC-6's "each PHASE_COMMITTED SHALL record cumulative token and cost usage"
+  clause, which had no provider to record anything about until now.
+- `controlplane/checks.py` — CheckResult gained stdout/stderr fields (default empty, backward
+  compatible), captured but never used for pass/fail — QA-2's line is unmoved, this is
+  commentary for retry feedback only, explicitly documented as such in the dataclass itself.
+- `controlplane/cli.py` — `run` gained `--model-provider {none,openai}` and budget/retry flags,
+  plus a small dependency-free .env loader that never logs what it loads and lets real
+  environment variables win over the file.
+
+**A real bug found while wiring this in, not before**: `gate.py`'s disclosure-policy text had a
+hardcoded closing line from Phase A — "This run: no third-party model provider is used" —
+printed at the approval gate of the very first run that used one. A live, if minor, DISCLOSE-1
+compliance bug: the gate would have told the operator something false about what was about to
+happen. Fixed by making that line a function of the run's actual model_in_use/model_name
+state, threaded through from Runner.
+
+**The first live run**: `plans/sample-plan-llm.json` — the same two legitimate remediations
+`plans/sample-plan.json` hand-authors as literal edits (guard divide-by-zero, add Multiply),
+but with edits: [], deliberately targeting the safe synthetic fixture rather than the real
+stretch-goal repo on this first attempt. Both phases succeeded on the first try, zero retries:
+`git show`-verified by hand, not just trusted from the run's own "OK" output — the model wrote
+a correct guard clause and a correct Multiply method plus a test following the exact
+RunTest(...) pattern the existing file already used, touching nothing outside declared scope.
+Total cost: 1497 input / 1124 output tokens, about $0.03.
+
+**Regression check**: 47/47 hermetic tests pass, 14 new — test_model_provider.py and
+test_llm_implementer.py test the isolated pieces; test_runner_llm.py drives Runner itself
+through MockModelProvider end to end, covering first-attempt success, malformed-response
+retry, retry-budget exhaustion (confirms escalation, not an infinite loop), the file-only reset
+between attempts (confirms a failed attempt's content doesn't survive into the next one), and
+both budget-overrun paths (refused before any call, and caught after a call that used more than
+the cap allowed). One test-authoring mistake caught and fixed along the way: an initial "budget
+refuses before calling" test used a budget of 1 rather than 0, which is large enough to permit a
+capped call — the assertion was wrong, not the code; the actual pre-call-refusal case needed 0
+to exercise, and a companion test was added for the post-call-overrun case that 1 actually tests.
+
+**Deliberately not built this pass**: EXEC-7 (crash mid-run, exclusive lock, resume report on
+restart) — a distinct concern from replacing the implementer, tracked as the one piece Phase E
+needs before FRD section 6 acceptance criterion 11 is satisfiable. The model has also only been
+run against the safe synthetic fixture — running it against the real alloy-mvc-template repo is
+a bigger, costlier step, explicitly deferred pending the operator's own DISCLOSE-1 eligibility
+confirmation rather than assumed.
+
+**State after this entry**: requirements.txt added (the project's first real third-party
+dependency). git status shows the new provider/implementer modules, the fixed gate.py,
+the rewritten runner.py, requirements.txt, .env.example, and plans/sample-plan-llm.json
+pending commit; .env itself correctly does not appear. v1 requirement count unchanged at 29 —
+this phase built toward already-v1 requirements (EXEC-1/2/3, BUDGET-1/2, SECRET-1,
+DISCLOSE-1, TEST-1), none were promoted or demoted.
+
+**To resume cold**: read CLAUDE.md in full, then FRD.md (EXEC-1/2/3, BUDGET-1/2, and the
+still-open EXEC-7), run `pip install -r requirements.txt`, run
+`python -m unittest discover -s controlplane/tests` (expect 47/47), then either build EXEC-7,
+run the live model against the real stretch-goal target (after confirming disclosure
+eligibility), or finish Phase B's B1/B2.
