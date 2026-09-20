@@ -1044,3 +1044,87 @@ INTEGRITY-8 especially, for the requirements Phase C targets), run
 and 9/9), inspect `.scratch/audits/alloy-mvc-template.json` for the real audit output, then
 start Phase D (audit → plan generation) or finish Phase B's B1 (`ENV-5` spike) / B2 (private
 feeds).
+
+
+---
+
+### 2026-09-20 — Phase D: audit-derived plans, proven end-to-end against the real target repo
+
+Same day, continuation after Phase C. User said "continue" after being shown Phase C's results
+and the choice between Phase D, finishing Phase B's B1/B2, or the stretch-goal target repo.
+
+Re-read the exact current FRD text for PLAN-1, PLAN-5, and IMPLEMENTATION-PLAN.md's Phase D
+section before building, per the project's now-established habit of grounding in the actual doc
+text rather than a remembered paraphrase. Confirmed Phase D's scope is narrower than "make the
+migration work": it groups findings into phases (PLAN-1 path (a), PLAN-2's v1 lexical scope —
+category/remediation-tag plus declared-path overlap only) and produces a `plan.json` in the
+exact shape Phase A's engine already consumes. Turning that into an actually-executable
+migration (literal edit content) is explicitly Phase E's job, not this one — there is no LLM
+yet and no hand-authored remediation content for a repo as complex as the real target.
+
+Before writing code, checked the real target repo's size (216 files, 34.3MB excluding
+bin/obj/node_modules/.git) to confirm a full live-execution demonstration — materializing a
+scratch copy and running Phase A's actual engine against it — was practical, not just a
+grouping-logic unit test. It was small enough, so that became the plan: don't just build the
+generator, prove it against the real repo end to end.
+
+**What was built**: `controlplane/plangen.py` — domain-agnostic, knows nothing about .NET.
+Reads the generic findings-file contract (category/severity/affected_paths/remediation_tag)
+and a directory of node-template JSON files (id -> side_effect_class), both pack-supplied data,
+never pack code. Groups findings sharing a remediation_tag AND a "component" (computed via pure
+path-prefix matching against the directories of `.csproj`-affecting findings — no semantic
+understanding of what a project contains) into one phase each. A finding with no
+remediation_tag (informational only) is dropped from the plan but recorded, not silently lost,
+in a `_generated_from.dropped_informational_findings` field. Added a `generate-plan` subcommand
+to `controlplane/cli.py`; `plan.py` and `runner.py` were not touched at all. 8 new hermetic
+tests in `controlplane/tests/test_plangen.py`, including one that loads a generated plan
+through the real, unmodified `plan.py` loader rather than just asserting on the dict shape.
+
+**Then the actual proof**: generated a plan from Phase C's real `alloy-mvc-template` audit (11
+findings) -> **4 phases**, zero dropped, phases ordered sensibly (retarget-to-SDK-style first,
+then package management, then the incompatible-API rewrite, then config modernization). Ran it
+through `python -m controlplane.cli run` — Phase A's completely unmodified engine — against a
+fresh scratch copy of the real repo (never the original; confirmed via `git status` on the
+original afterward: "nothing to commit, working tree clean"). Results:
+- `SECRET-1` found two genuine secrets in a real repository for the first time in this
+  project's life: a connection-string password in `ConnectionStrings.config` and another in
+  `build/database/Alloy.mdf`. Both required forced acknowledgment before the gate, exactly as
+  designed.
+- The baseline `dotnet build Alloy.Mvc.Template.sln` genuinely failed (exit 1) — expected and
+  correct, since this is confirmed legacy-format MSBuild and the environment only has the
+  `dotnet` SDK, not full MSBuild.exe, consistent with everything already documented about
+  `ENV-3`'s resolution. `QA-2`'s exit-code-governs-the-verdict mechanism recorded this via the
+  synthetic `__process_exit__` marker (no JUnit/TRX artifact exists for a bare build), and
+  `QA-5` correctly treated the identical failure at baseline and after each phase as
+  non-blocking rather than halting the run.
+- All 4 phases committed as exactly one commit each (confirmed via `git log` on the run
+  branch), zero scope violations (declared_scope was honored trivially since generated phases
+  have empty `edits`), zero regressions, `RUN_COMPLETED` fired.
+
+Since generated phases have empty `edits` by design, this run proves the governance spine and
+the generator's output are structurally and mechanically correct end to end against a real,
+previously-unseen legacy codebase — not that a migration was actually performed. The plan's own
+`plan_description` field says this explicitly, so nobody reviewing the artifact later mistakes
+a successful *governance* run for a successful *migration*.
+
+**Regression check**: `controlplane/tests/` now has 23 tests (8 new), all passing; the
+knowledge pack's 9 stay green. Confirms Phase D's exit criteria — "executed by Phase A's engine
+with no changes to that engine" — holds literally, not just in spirit: `plan.py` and
+`runner.py` are byte-identical to before this session.
+
+**What changed in the docs**: `IMPLEMENTATION-PLAN.md` Phase D marked done with the concrete
+run results; `CLAUDE.md`'s status summary, decision log, and "Next action" updated. The
+stretch-goal-repo memory was not touched this entry (already reflects Phase C's read-only
+audit; Phase D's execution was against a copy, consistent with what that memory already says
+about "not built against" referring to the original).
+
+**State after this entry**: v1 requirement count unchanged at 29 — Phase D, like Phase C,
+built toward requirements already tagged v1 rather than promoting or demoting anything.
+`git status` shows `controlplane/plangen.py`, `controlplane/tests/test_plangen.py` new, and
+`controlplane/cli.py` modified, alongside the usual doc updates, pending commit.
+
+**To resume cold**: read `CLAUDE.md` in full, then `FRD.md` (PLAN-1, PLAN-5, PLAN-2's v1 note),
+run both test suites (`controlplane/tests` expect 23/23, the pack's `tests` expect 9/9), then
+either start Phase E (the agentic implementer — the first phase that needs an LLM provider
+credential, a decision only the user can make) or finish Phase B's B1 (`ENV-5` spike) / B2
+(private feeds), neither of which blocks Phase E.

@@ -125,17 +125,40 @@ it in the event log at run time is a Phase D/E integration point, not done here)
   live Phase A run were re-verified afterward — the plan loader was never touched and behaves
   identically. 9/9 hermetic analyzer tests pass, zero network.
 
-## Phase D — Audit → plan generation — *was Phase 2*
+## Phase D — Audit → plan generation — *was Phase 2* — **done, 2026-09-20**
 **Goal**: turn any findings file into a concrete plan of the same shape Phase A already executes.
 
-Covers FRD v1: `PLAN-1`. **Grouping is category + declared-path overlap only** — lexical
-operations the domain-agnostic core can honestly perform. Blast-radius grouping (`PLAN-2`) is v2
-and flagged in the FRD as the clearest instance of the domain-abstraction leak; do not implement
-it in the core without deciding first whether it belongs in the pack.
+Covers FRD v1: `PLAN-1` path (a). **Grouping is category (here: remediation tag) + declared-path
+overlap only** — lexical operations the domain-agnostic core can honestly perform, implemented
+in `controlplane/plangen.py`. Blast-radius grouping (`PLAN-2`) is still v2 and untouched.
 
-- **Exit criteria**: a plan generated from Phase C's real output is executed by Phase A's engine
-  with no changes to that engine, and a human reviewing the generated phases says they are
-  sensible. (FRD §8 item 4.)
+`plangen.py` knows nothing about .NET or any other domain: it reads the generic findings-file
+contract (category/severity/affected_paths/remediation_tag) and a directory of node-template
+JSON files (id → side_effect_class), both pack-supplied data, never pack code. Component
+detection (which project a finding belongs to, for the path-overlap half of grouping) is pure
+path-prefix matching against the directories of `.csproj`-affecting findings — no parsing of
+what a project actually contains. A finding with no `remediation_tag` (informational only, no
+action to group) is dropped from the plan but never silently — its id is recorded in the
+generated plan's `_generated_from.dropped_informational_findings` field.
+
+- **Exit criteria — met, against the real stretch-goal target, not a synthetic one.** Generated
+  a plan from Phase C's real `alloy-mvc-template` audit (11 findings → **4 phases**, one per
+  remediation tag, zero findings dropped) and ran it through Phase A's **completely unmodified**
+  `runner.py`/`plan.py` against a scratch copy of the real repo (`python -m controlplane.cli run
+  --plan <generated> --fixture C:\Code\_sandbox\Opti11\alloy-mvc-template --yes`). Result: `SECRET-1`
+  found two genuine secrets in the real repo for the first time (a connection-string password in
+  `ConnectionStrings.config` and another in `build/database/Alloy.mdf`) and correctly forced
+  acknowledgment before the gate; the baseline `dotnet build Alloy.Mvc.Template.sln` genuinely
+  failed (legacy MSBuild format, as expected — `ENV-3`'s resolution predicted exactly this) and
+  `QA-5` correctly treated it as a pre-existing, non-blocking delta; all 4 phases committed
+  (exactly one commit each, `git log` confirms) with zero scope violations and zero regressions;
+  `RUN_COMPLETED` fired. Since generated phases have empty `edits` by design (no LLM or
+  hand-authored remediation exists yet — that's Phase E), this proves structural and mechanical
+  correctness end to end, not that the *migration* succeeded. Generated phases read as sensible
+  on review: retarget-to-SDK-style first, then package management, then the incompatible-API
+  rewrite, then config modernization — a defensible real migration order.
+- **Not built**: any actual remediation content. This was always Phase E's job, and the
+  generator says so in every plan it produces (`plan_description` states this explicitly).
 
 ## Phase E — Agentic implementer — *was Phase 4*
 **Goal**: replace Phase A's scripted implementer with a model, and only that.
