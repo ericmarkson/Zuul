@@ -92,6 +92,14 @@ def _parse_trx(path: Path) -> dict[str, str]:
     return outcomes
 
 
+def is_failure(result: CheckResult) -> bool:
+    """A check counts as failed if it didn't run at all, or recorded any failing test (which
+    includes QA-2's synthetic exit-code marker). Used for a phase-specific check with no
+    baseline counterpart to compare against -- there is no "pre-existing failure" tolerance
+    possible for a check that is new to this phase; any failure is a failure, directly."""
+    return result.not_run or bool(result.failed_tests)
+
+
 def is_regression(baseline: CheckResult, current: CheckResult) -> bool:
     """QA-5: a check already failing at baseline and still failing identically is not a fault.
     A check newly failing, or a check that flips from executable to not-run, is a regression."""

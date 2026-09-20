@@ -30,6 +30,11 @@ class PhaseSpec:
     declared_scope: list[str]
     side_effect_class: str
     edits: list[EditSpec]
+    # PLAN-5: each phase declares its own check set. None means "use the plan's default
+    # check_set" -- most hand-authored phases never need more than that; a generated phase
+    # whose node template knows what success looks like (e.g. "this file should now exist")
+    # can add its own on top, per plangen.py.
+    checks: list[CheckSpec] | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,10 @@ def load_plan(path: Path) -> Plan:
             declared_scope=list(p["declared_scope"]),
             side_effect_class=p["side_effect_class"],
             edits=[EditSpec(path=e["path"], content_file=e["content_file"]) for e in p["edits"]],
+            checks=(
+                [CheckSpec(id=c["id"], command=c["command"], result_artifact=c["result_artifact"], result_format=c["result_format"]) for c in p["checks"]]
+                if p.get("checks") is not None else None
+            ),
         )
         for p in data["phases"]
     ]

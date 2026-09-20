@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from controlplane import gitops
-from controlplane.checks import CheckResult, is_regression, run_check
+from controlplane.checks import CheckResult, is_failure, is_regression, run_check
 from controlplane.escalate import EscalationCategory, EscalationReport, write_escalation_report
 from controlplane.eventlog import DiagnosticLog, EventLog, EventType
 from controlplane.gate import (
@@ -85,16 +85,21 @@ class Runner:
 
     # ---- check set ---------------------------------------------------------------
 
-    def _run_check_set(self, phase_id: str) -> list[CheckResult]:
+    def _run_check_set(self, phase_id: str, checks: list | None = None) -> list[CheckResult]:
         """EXEC-10: checks never run in the implementer's own working directory. Before each
         check set, the verifier's independent worktree is moved (detached) to whatever commit
-        the implementer last produced, and every check command executes there instead."""
+        the implementer last produced, and every check command executes there instead.
+
+        PLAN-5: a phase may declare its own check set (e.g. a generated phase whose node
+        template knows a specific file should now exist); `checks=None` means "use the plan's
+        default `check_set`," which is what baseline and hand-authored phases always do."""
+        checks = checks if checks is not None else self.plan.check_set
         verify_commit = gitops.head(self.target_repo)
         gitops.checkout(self.verifier_repo, verify_commit)
         self.diag_log.write(f"phase={phase_id} verifier worktree checked out at {verify_commit}")
 
         results = []
-        for check in self.plan.check_set:
+        for check in checks:
             artifact = Path(check.result_artifact.format(run_dir=str(self.run_dir), phase_id=phase_id))
             command = [
                 part.format(run_dir=str(self.run_dir), phase_id=phase_id, result_artifact=str(artifact))
@@ -232,10 +237,15 @@ class Runner:
                 )
                 return False
 
-            phase_results = self._run_check_set(phase.id)
+            phase_results = self._run_check_set(phase.id, phase.checks)
+            # PLAN-5: a phase may run checks the baseline never did (a generated phase's own
+            # node-template-declared check). Those have no baseline entry to compare against --
+            # there is no "pre-existing failure" tolerance for a check that is new to this
+            # phase, so any failure there counts directly, not as a delta.
             regressions = [
                 r for r in phase_results
-                if r.check_id in baseline_by_check and is_regression(baseline_by_check[r.check_id], r)
+                if (r.check_id in baseline_by_check and is_regression(baseline_by_check[r.check_id], r))
+                or (r.check_id not in baseline_by_check and is_failure(r))
             ]
             if regressions:
                 if attempt > self.retry_budget:
@@ -245,7 +255,10 @@ class Runner:
                         check_results=phase_results,
                         evidence={
                             "regressed_checks": [r.check_id for r in regressions],
-                            "new_failures": {r.check_id: sorted(r.failed_tests - baseline_by_check[r.check_id].failed_tests) for r in regressions},
+                            "new_failures": {
+                                r.check_id: sorted(r.failed_tests - (baseline_by_check[r.check_id].failed_tests if r.check_id in baseline_by_check else set()))
+                                for r in regressions
+                            },
                             "attempts": attempt,
                         },
                     )

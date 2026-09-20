@@ -1,9 +1,11 @@
 """Minimal static analyzer for .NET Framework -> .NET Core migration targeting detection.
 Read-only: never writes to, builds, or executes anything in the scanned repository -- it only
-parses .csproj/.config XML and file presence. No MSBuild, no dotnet CLI, no network."""
+parses .csproj/.config XML and file presence, and greps .cs file text. No MSBuild, no dotnet
+CLI, no network."""
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -39,6 +41,26 @@ def _local_tag(elem: ET.Element) -> str:
 
 def _rel(path: Path, repo_root: Path) -> str:
     return path.relative_to(repo_root).as_posix()
+
+
+def _find_usage_sites(project_dir: Path, repo_root: Path, namespace_prefix: str) -> list[str]:
+    """Every .cs file under the project directory whose text mentions the namespace, whether
+    via a `using` directive or a fully-qualified reference -- a real fix needs these paths in
+    scope, not just the .csproj where the assembly reference happens to be declared. A plain
+    substring/word-boundary match, not a real C# parse: false positives (e.g. a comment) are
+    the safe direction here, since they widen scope rather than narrow it."""
+    pattern = re.compile(r"\b" + re.escape(namespace_prefix) + r"\b")
+    sites = []
+    for cs_path in sorted(project_dir.rglob("*.cs")):
+        if "bin" in cs_path.parts or "obj" in cs_path.parts:
+            continue
+        try:
+            content = cs_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if pattern.search(content):
+            sites.append(_rel(cs_path, repo_root))
+    return sites
 
 
 def _is_legacy_project(root: ET.Element) -> bool:
@@ -104,16 +126,19 @@ def analyze_project(csproj_path: Path, repo_root: Path) -> list[Finding]:
                 break
 
     for prefix, assemblies in sorted(incompatible_refs.items()):
+        usage_sites = _find_usage_sites(csproj_path.parent, repo_root, prefix)
         findings.append(Finding(
             id=_next_id(),
             category="incompatible-api",
             severity="high",
-            affected_paths=[rel_csproj],
+            affected_paths=[rel_csproj, *usage_sites],
             description=f"References {prefix}-family assemblies with no direct .NET Core "
                         f"equivalent: {sorted(set(assemblies))}. Requires a real rewrite, not "
-                        f"a mechanical port.",
+                        f"a mechanical port. {len(usage_sites)} source file(s) actually "
+                        f"reference this namespace and are in scope for the fix, not just the "
+                        f"project file's reference declaration.",
             remediation_tag="replace-incompatible-api",
-            evidence={"assemblies": sorted(set(assemblies))},
+            evidence={"assemblies": sorted(set(assemblies)), "usage_site_count": len(usage_sites)},
         ))
 
     return findings

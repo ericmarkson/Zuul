@@ -80,6 +80,44 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("System.Web.Mvc", incompatible[0].evidence["assemblies"])
         self.assertNotIn("System", incompatible[0].evidence["assemblies"])  # bare "System" must not match
 
+    def test_incompatible_api_scope_includes_no_usage_sites_when_none_exist(self):
+        """Without any .cs files, affected_paths must be just the csproj -- confirms the base
+        case wasn't broken by adding usage-site detection."""
+        self._write_project("src/Legacy", "Legacy.csproj", LEGACY_CSPROJ)
+        findings = analyzer.analyze_repo(self.repo)
+        incompatible = next(f for f in findings if f.category == "incompatible-api")
+        self.assertEqual(incompatible.affected_paths, ["src/Legacy/Legacy.csproj"])
+        self.assertEqual(incompatible.evidence["usage_site_count"], 0)
+
+    def test_incompatible_api_scope_includes_actual_cs_usage_sites(self):
+        """The real fix this closes: a phase built from this finding must be able to touch the
+        files that actually use the incompatible API, not just the project file that references
+        the assembly."""
+        csproj = self._write_project("src/Legacy", "Legacy.csproj", LEGACY_CSPROJ)
+        controller = csproj.parent / "Controllers" / "HomeController.cs"
+        controller.parent.mkdir(parents=True, exist_ok=True)
+        controller.write_text("using System.Web.Mvc;\n\npublic class HomeController : Controller {}\n", encoding="utf-8")
+        unrelated = csproj.parent / "Models" / "Widget.cs"
+        unrelated.parent.mkdir(parents=True, exist_ok=True)
+        unrelated.write_text("public class Widget {}\n", encoding="utf-8")
+
+        findings = analyzer.analyze_repo(self.repo)
+        incompatible = next(f for f in findings if f.category == "incompatible-api")
+
+        self.assertIn("src/Legacy/Controllers/HomeController.cs", incompatible.affected_paths)
+        self.assertNotIn("src/Legacy/Models/Widget.cs", incompatible.affected_paths)
+        self.assertEqual(incompatible.evidence["usage_site_count"], 1)
+
+    def test_usage_site_detection_skips_bin_and_obj(self):
+        csproj = self._write_project("src/Legacy", "Legacy.csproj", LEGACY_CSPROJ)
+        generated = csproj.parent / "obj" / "Generated.cs"
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        generated.write_text("using System.Web.Mvc;\n", encoding="utf-8")
+
+        findings = analyzer.analyze_repo(self.repo)
+        incompatible = next(f for f in findings if f.category == "incompatible-api")
+        self.assertEqual(incompatible.evidence["usage_site_count"], 0)
+
     def test_packages_config_detected(self):
         csproj = self._write_project("src/Legacy", "Legacy.csproj", LEGACY_CSPROJ)
         (csproj.parent / "packages.config").write_text("<packages/>", encoding="utf-8")
