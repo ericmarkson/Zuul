@@ -125,7 +125,17 @@ it in the event log at run time is a Phase D/E integration point, not done here)
   live Phase A run were re-verified afterward — the plan loader was never touched and behaves
   identically. 9/9 hermetic analyzer tests pass, zero network.
 
-## Phase D — Audit → plan generation — *was Phase 2* — **done, 2026-09-20**
+## Phase D — Audit → plan generation — *was Phase 2* — **done under the OLD design, 2026-09-20; superseded by the pivot below, same day**
+
+**⚠ Read `CLAUDE.md`'s "ARCHITECTURAL PIVOT IN PROGRESS" section before building anything
+further in this phase.** Everything below this line describes the template-matching design as
+it was built and as it stood when Phase F's first run found two gaps. That design worked and is
+tested (`b25eda5`), but the user rejected its *shape* — a fixed node-template catalogue a
+finding must match — as the wrong kind of system, and asked for plan generation to become
+dynamic (one model call per finding-group proposing scope/side-effect-class/checks) instead.
+That redesign is accepted but **not yet built** as of this entry. Do not extend the template
+catalogue (e.g. a fifth template file) — replace its matching core instead. The per-finding-
+group *grouping* logic below (category + path-overlap) is unaffected and stays.
 **Goal**: turn any findings file into a concrete plan of the same shape Phase A already executes.
 
 Covers FRD v1: `PLAN-1` path (a). **Grouping is category (here: remediation tag) + declared-path
@@ -160,7 +170,15 @@ generated plan's `_generated_from.dropped_informational_findings` field.
 - **Not built**: any actual remediation content. This was always Phase E's job, and the
   generator says so in every plan it produces (`plan_description` states this explicitly).
 
-## Phase E — Agentic implementer — *was Phase 4* — **done, 2026-09-20**
+## Phase E — Agentic implementer — *was Phase 4* — **done under the OLD design, 2026-09-20; extend per the pivot below**
+
+**⚠ Same pivot as Phase D above — see `CLAUDE.md`.** The single-completion-call implementer
+described below is built, tested, and was live-verified twice (the safe fixture, then the real
+`alloy-mvc-template` repo). It is not wrong, but it is step one, not the end state: the accepted
+redesign extends this into a bounded, multi-step, tool-calling agent (can read additional files
+for context before finalizing an edit) rather than one prompt/response. Everything else about
+this phase — the budgets, the `EXEC-3` retry loop, `EXEC-7`'s crash/resume, the frozen
+declared-scope enforcement via `INTEGRITY-3` — is unaffected and stays exactly as built.
 **Goal**: replace Phase A's scripted implementer with a model, and only that.
 
 Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `EXEC-7`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`,

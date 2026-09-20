@@ -1398,3 +1398,91 @@ diagnostics, escalation-free git history on `run/alloy-live-001`) for inspection
 gitignored scratch, not committed, and will not survive a fresh clone. The real
 `alloy-mvc-template` repo is confirmed untouched. No FRD or IMPLEMENTATION-PLAN.md changes made
 yet pending the user's direction on the two gaps above.
+
+
+---
+
+### 2026-09-20 — Architectural pivot: dynamic plan generation, agentic implementer (design agreed, not built)
+
+Same day, immediately following Phase F's first run. The direct fix for that run's two gaps
+(real usage-site detection in the analyzer; a template-declared `expected_new_paths` field
+synthesizing a generated existence check) was built, tested, and committed (`b25eda5`) before
+attempting a third live run to confirm it against the real repo.
+
+The user interrupted that live run, not because anything was broken, but to reject the shape of
+what had just been built: "I dont like that we're hardcoding things in here for what is
+supposed to be a very dynamic process." The specific target was the node-template catalogue
+(four fixed JSON files a finding's remediation_tag must match) and the synthesized check-script
+generation -- both real, tested, working, and both examples of a human pre-deciding a fixed
+menu of remediations in advance rather than the system figuring out what a given finding
+actually needs.
+
+The user's own framing: "based on the plan, we more or less create runtime project-local agents
+that will do the technical processes and then QA to ensure it was done right... recursive
+dynamic step by step agent creation, without having any of this hardcoded."
+
+Rather than agreeing or redesigning immediately, laid out the real constraint first: this
+project's governance model (`PLAN-5`'s frozen scope/checks/side-effect-class at the single
+approval gate, `APPROVAL-1`'s "no scheduled interruption after approval") is incompatible with
+agents that dynamically redefine their own scope or verification *during* unattended execution
+-- that was a deliberate, hard-won design decision from the original rightsizing pass, not
+incidental hardcoding. Proposed a three-part redesign that gets the dynamism the user wants
+without touching that model:
+1. Plan generation becomes one model call per finding-group instead of template-matching --
+   still produces a frozen plan.json, still one gate, still an unmodified execution engine.
+2. The per-phase implementer becomes a bounded multi-step tool-calling agent instead of one
+   completion call -- still scope-limited to what was already frozen at approval.
+3. Verification stays deterministic -- explicitly flagged as non-negotiable, since `QA-2` exists
+   specifically to prevent an LLM's own opinion of its work (or another agent's) from being the
+   pass/fail gate, and "QA agent" is an easy phrase to say in a way that implies exactly that
+   violation without meaning to.
+
+The user's response clarified the project boundary further rather than objecting to any of the
+three points: assessment-artifact production (the audit) is entirely external to this project
+-- in the real system it would be a genuine MCP-backed knowledge pack; what's in
+`knowledge-packs/dotnet-framework-to-core/` is explicitly a mock stand-in for that separate
+process, not something to keep deepening. "Our project" starts at the audit and owns exactly
+three things: turning findings into steps, spinning up runtime agents to do each step, and
+confirming each step was done right. This matches and confirms the three-point proposal.
+
+User then said session usage was nearly exhausted and asked for documentation, not more code,
+to lock in the pivot so a fresh session does not rebuild the template-matching approach.
+
+**What was done in response**: no new implementation code. `CLAUDE.md` gained a prominent
+"ARCHITECTURAL PIVOT IN PROGRESS" section (placed directly before the Next Action list so it
+cannot be missed) with the full three-point redesign, what's still reusable versus superseded,
+the one open question (whether the four existing templates survive as optional non-binding
+context for the plan-generation model, or get dropped -- not resolved before usage ran out),
+and seven concrete next steps for whoever picks this up. A matching, shorter decision-log entry
+was added. `IMPLEMENTATION-PLAN.md`'s Phase D and Phase E headers were amended in place with
+warning blocks pointing at the pivot, making clear the phases marked "done" describe the
+superseded design, not the target one -- without deleting or rewriting the content underneath,
+since it remains an accurate record of what was built and verified. `FRD.md` gained a new
+S14 revision note recording the same pivot at the requirements level: `PLAN-1` path (a)'s
+mechanism changes, `EXEC-2`'s implementer role gains multi-step capability, and `QA-2` is
+explicitly reaffirmed rather than reopened.
+
+**What remains exactly as built, not touched by this pivot**: the governance spine in full
+(`INTEGRITY-*`, `APPROVAL-*`, `EXEC-6/7`, `BUDGET-*`, `SECRET-1`, `DISCLOSE-1`), and critically,
+the per-phase-checks schema capability just added in `b25eda5` (`PhaseSpec.checks`,
+`is_failure()`'s direct-evaluation-with-no-baseline-counterpart logic) -- this is exactly the
+mechanism the redesign needs to attach a model-authored check to a model-authored phase, just
+not wired to a fixed template anymore. Also unaffected: `analyzer.py`'s real usage-site
+detection, since that is Phase C's business (external/mocked) regardless of how Phase D
+generates plans from whatever Phase C produces.
+
+**State after this entry**: all code changes from this session are committed through `b25eda5`.
+This session-log entry, `CLAUDE.md`, `IMPLEMENTATION-PLAN.md`, and `FRD.md`'s pivot documentation
+are the only uncommitted changes, about to be committed with this entry. No live model calls
+were made after the interrupted one (which was cancelled before any API request went out, so it
+cost nothing). `.scratch/plans/alloy-mvc-template-live2-plan.json` exists on disk (gitignored,
+generated under the old template-matched design with both direct fixes applied) but was never
+executed against the real repo a third time -- that verification is now blocked on the redesign
+landing first, not worth doing against a design about to be replaced.
+
+**To resume cold**: read `CLAUDE.md` in full, especially the pivot section, then `FRD.md` S14,
+then `IMPLEMENTATION-PLAN.md`'s Phase D and E warning blocks, then build the LLM-driven plan
+generator and the multi-step implementer per the three-point design above, resolving the
+templates-as-context question along the way (ask, or make the call and say which was picked).
+Re-run Phase F a third time once that lands, to get real evidence the redesign produces better
+phases than the template-matched one did -- same practice as everything else in this project.
