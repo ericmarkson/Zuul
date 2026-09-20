@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     gen_parser.add_argument("--model", default="gpt-5.6-sol")
     gen_parser.add_argument("--reasoning-effort", default="low")
     gen_parser.add_argument("--llm-max-output-tokens", type=int, default=4000)
+    gen_parser.add_argument("--llm-max-tool-rounds", type=int, default=8, help="bounded research loop per finding-group (grep_repo/list_directory/read_file, then finalize_proposal)")
     gen_parser.add_argument("--max-tokens-total", type=int, default=50000, help="BUDGET-1, applied to this whole generation batch")
     gen_parser.add_argument("--wall-clock-seconds", type=float, default=600, help="BUDGET-1, applied to this whole generation batch")
 
@@ -135,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
             model_provider=model_provider,
             check_set=check_set,
             run_id_prefix=args.run_id_prefix,
+            max_output_tokens=args.llm_max_output_tokens,
+            max_tool_rounds=args.llm_max_tool_rounds,
         )
         plangen.write_plan_file(args.out, plan)
 

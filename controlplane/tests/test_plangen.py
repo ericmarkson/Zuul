@@ -15,19 +15,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from controlplane import plangen  # noqa: E402
-from controlplane.model_provider import MockModelProvider, ModelResponse  # noqa: E402
+from controlplane.model_provider import MockModelProvider, ModelResponse, ToolCall  # noqa: E402
 
 SAMPLE_CHECK_SET = [{"id": "build", "command": ["true"], "result_artifact": "nonexistent.xml", "result_format": "junit"}]
 
 
 def _proposal_response(side_effect_class: str, description: str = "do the remediation", additional_scope=None, checks=None) -> ModelResponse:
-    payload = {
-        "side_effect_class": side_effect_class,
-        "description": description,
-        "additional_scope": additional_scope or [],
-        "checks": checks,
-    }
-    return ModelResponse(content=json.dumps(payload), input_tokens=10, output_tokens=10, latency_seconds=0.01)
+    return ModelResponse(
+        content="", input_tokens=10, output_tokens=10, latency_seconds=0.01,
+        tool_calls=(ToolCall(id="call-1", name="finalize_proposal", arguments={
+            "side_effect_class": side_effect_class, "description": description,
+            "additional_scope": additional_scope or [], "checks": checks,
+        }),),
+    )
 
 
 def _doc(findings: list[dict]) -> dict:
@@ -61,7 +61,7 @@ class PlanGenTests(unittest.TestCase):
         self.assertEqual(dropped, [])
         self.assertEqual(phases[0]["side_effect_class"], "file-only")
         self.assertIn("src/A/A.csproj", phases[0]["declared_scope"])
-        self.assertEqual(len(provider.calls), 1)  # one model call per group, not per finding
+        self.assertEqual(len(provider.tool_calls_log), 1)  # one model call per group, not per finding
 
     def test_same_tag_different_projects_produce_separate_phases_and_separate_calls(self):
         doc = _doc([
@@ -74,7 +74,7 @@ class PlanGenTests(unittest.TestCase):
         scopes = [set(p["declared_scope"]) for p in phases]
         self.assertIn({"src/A/A.csproj"}, scopes)
         self.assertIn({"src/B/B.csproj"}, scopes)
-        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(len(provider.tool_calls_log), 2)
 
     def test_different_tags_produce_separate_phases_even_in_same_project(self):
         doc = _doc([

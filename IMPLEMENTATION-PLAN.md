@@ -185,6 +185,34 @@ generated plan's `_generated_from.dropped_informational_findings` field.
   fix is hardcoded; both came from the model reasoning about the specific findings in front of
   it. Plan artifact not committed (a smoke-test output, not a project file); the generation
   command is reproducible from `.scratch/audits/alloy-mvc-template.json`.
+- **Extended into a research loop, same day, after the third Phase F run found a real,
+  one-level-deeper gap** (`analyzer.py` has no `.cshtml` usage-site detection). Rather than add a
+  fifth hardcoded scanner, `propose_phase` is now a bounded tool-calling loop (`max_tool_rounds`,
+  default 8, `--llm-max-tool-rounds`) with read-only `grep_repo`/`list_directory`/`read_file`
+  tools against the actual target repo, via a new `ModelProvider.complete_with_tools` call —
+  mirroring `llm_implementer.py`'s shape. Placement reasoning, not just preference: `PLAN-5`
+  freezes `declared_scope` at the gate, so research injected into the *implementer's* loop
+  (after the gate) could only help it avoid a violation, never let it complete a mis-scoped
+  remediation — research has to happen before the freeze, which is why this lives in
+  `plangen_llm.py`, not `llm_implementer.py`. New shared module `controlplane/repo_tools.py`
+  holds the path-traversal-guarded tool implementations, used by both loops now (extracted out
+  of `llm_implementer.py`, which no longer keeps its own copy). `grep_repo_tool` is a plain
+  case-insensitive substring search, not regex — no ReDoS surface, and "does this identifier show
+  up anywhere" doesn't need a pattern language. A real, pre-existing `MockModelProvider` bug was
+  found and fixed while writing the new tests: `complete_with_tools` logged a *reference* to the
+  mutable `messages` list, so every earlier log entry silently aliased to the final round's state;
+  fixed with a shallow copy per call. 117/117 hermetic tests pass (19 new, including
+  `test_repo_tools.py`). **Live-validated against the real repo with zero changes to
+  `analyzer.py`**: regenerated the plan from the same real audit, and phase-3's `declared_scope`
+  now includes both `.cshtml` files the previous run's implementer had tried and failed
+  (fail-closed) to touch — found by the model's own `grep_repo` search, not an enumerated file
+  type list. It also correctly excluded the `Web.Debug.config`/`Web.Release.config` files the
+  previous attempt had also touched, which plausibly belong to phase-4, not phase-3 — this
+  proposal may be more precisely scoped, not just broader. ~117k input / ~3.8k output tokens,
+  ~$0.55 (meaningfully more than non-research generation's ~$0.09, the expected cost of letting
+  the model spend rounds investigating). Not yet done: an actual execution run of this new plan,
+  to confirm phase-3 now completes without escalating — a real-money checkpoint held pending a
+  check-in with the user, per this project's own practice.
 
 ## Phase E — Agentic implementer — *was Phase 4* — **done, then extended into a tool-calling agent, 2026-09-20**
 

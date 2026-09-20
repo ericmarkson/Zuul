@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from controlplane import repo_tools
 from controlplane.model_provider import ModelProvider
 
 SYSTEM_PROMPT = """You are the implementer agent inside an autonomous, git-native code \
@@ -165,32 +166,11 @@ def build_user_prompt(
     return "\n".join(lines)
 
 
-def _resolve_within_repo(target_repo: Path, rel_path: str) -> Path | None:
-    """Path-traversal guard for the read-only tools -- None means "refuse," not "raise": a
-    misbehaving tool call should come back as an error string the model can react to, not blow
-    up the whole loop."""
-    candidate = (target_repo / rel_path).resolve()
-    repo_root = target_repo.resolve()
-    if candidate != repo_root and repo_root not in candidate.parents:
-        return None
-    return candidate
-
-
 def _execute_tool(name: str, arguments: dict, target_repo: Path) -> str:
     if name == "read_file":
-        resolved = _resolve_within_repo(target_repo, arguments.get("path", ""))
-        if resolved is None:
-            return "error: path is outside the target repository"
-        if not resolved.is_file():
-            return "error: no such file"
-        return resolved.read_text(encoding="utf-8", errors="replace")
+        return repo_tools.read_file_tool(target_repo, arguments.get("path", ""))
     if name == "list_directory":
-        resolved = _resolve_within_repo(target_repo, arguments.get("path", "."))
-        if resolved is None:
-            return "error: path is outside the target repository"
-        if not resolved.is_dir():
-            return "error: no such directory"
-        return "\n".join(sorted(p.name + ("/" if p.is_dir() else "") for p in resolved.iterdir()))
+        return repo_tools.list_directory_tool(target_repo, arguments.get("path", "."))
     return f"error: unknown tool {name!r}"
 
 

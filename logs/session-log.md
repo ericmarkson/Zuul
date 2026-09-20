@@ -1769,3 +1769,105 @@ spikes). The self-test-tool idea from earlier in this entry (letting the impleme
 own draft against its checks before finalizing) is still a live, reasoned-through option for a
 *different* class of failure than what actually recurred this run -- worth returning to with its
 own fresh evidence, not bolted on speculatively.
+
+---
+
+### 2026-09-20 — Plan generation becomes a research loop: the analyzer's `.cshtml` blind spot fixed generally, not with a fifth hardcoded scanner
+
+User pushed back on the plan to "extend the analyzer to `.cshtml`" as the next step, and did so
+in a pattern-recognizing way rather than a one-off objection: **"we need to find the middle
+ground to ALWAYS make sure we're not hardcoding for any specific logic. This is why I talked
+about some kind of researcher or something that can understand the process."** The concern is
+structurally correct -- adding `.cshtml` detection to `analyzer.py` today just means the next
+gap is `.master`, `.ascx`, `.resx`, or whatever file type nobody thought to enumerate next time.
+That is hardcoding wearing a disguise, the same shape of thing the whole architectural pivot
+already rejected once for plan generation itself.
+
+**Where the research capability has to live, and why, reasoned through before building
+anything.** Two candidate loci: inside the implementer's existing tool loop (after the gate), or
+inside plan generation (before the gate). `PLAN-5` freezes `declared_scope` at the approval
+checkpoint and nothing may change it during execution -- so research injected only into the
+implementer's loop can help it *avoid* a scope violation (by knowing not to touch something) but
+can never let it *complete* a remediation whose true scope was mis-declared; the freeze has
+already happened by the time the implementer runs. Research has to happen before the freeze,
+which means it belongs in `plangen_llm.py`, not `llm_implementer.py` -- this placement decision
+is itself a consequence of the project's own governance model, not a stylistic preference.
+
+**Built**: `controlplane/plangen_llm.py`'s `propose_phase` is now a bounded tool-calling loop
+(mirroring `llm_implementer.py`'s shape, via the same `ModelProvider.complete_with_tools`),
+capped at `max_tool_rounds` (default 8, `--llm-max-tool-rounds` on the CLI). New shared module
+`controlplane/repo_tools.py` holds the read-only, path-traversal-guarded tool implementations
+(`resolve_within_repo`, `read_file_tool`, `list_directory_tool`, and the new `grep_repo_tool`) --
+extracted out of `llm_implementer.py` (which now imports from it instead of keeping its own
+private copy) specifically because path-traversal-guard logic is exactly the kind of
+security-relevant code that should not exist in two places that could silently drift apart.
+`grep_repo_tool` is a plain, case-insensitive **substring** search, deliberately not a regex
+engine -- there's no ReDoS/injection surface to reason about, and "does this identifier show up
+anywhere" doesn't need a pattern language. The model gets `grep_repo`/`list_directory`/`read_file`
+against the actual target repo (the findings document already carries `target_repo`, so no new
+plumbing was needed to get a path to search) before it must call `finalize_proposal` exactly once
+-- same terminal-call shape as `finalize_edits`, generalized to name the four proposal fields
+instead of raw file edits. This generalizes to *any* file type or remediation category the model
+decides to check, not an enumerated list -- the model chooses what to search for based on the
+finding in front of it, closer to how a person would `grep -r` before writing a migration plan
+than to a fixed scanner.
+
+**A real, pre-existing bug found and fixed while writing the new tests**: `MockModelProvider.
+complete_with_tools` stored a *reference* to the mutable `messages` list, not a snapshot. Since
+the caller keeps appending to that same list object across rounds, every earlier `tool_calls_log`
+entry silently ended up aliased to the FINAL round's state by the time a test inspected it after
+the loop completed. This had been present since the implementer's tool loop was built and
+untriggered until now, because every prior test happened to use `assertIn` against these logs
+(which still passes against the aliased final state) rather than exact-list equality. Fixed with
+a shallow copy (`list(messages)`) at each logged call. Also fixed two related, smaller gaps found
+while wiring the CLI: `generate-plan`'s `--llm-max-output-tokens` flag was defined but never
+actually threaded through to the model call (a latent no-op flag); now it, plus the new
+`--llm-max-tool-rounds`, both reach `plangen_llm.propose_phase` for real.
+
+**New tests**: `test_repo_tools.py` (16 tests -- the path-traversal guard directly, plus
+`grep_repo_tool` proven to find the same string across `.cs` *and* `.cshtml` files, respect a
+`path_glob` restriction, skip `bin`/`obj`/`.git`, and truncate rather than return unbounded
+output). `test_plangen_llm.py` rewritten for the tool-calling shape (mirroring
+`test_llm_implementer.py`'s own rewrite pattern) plus a new `ResearchLoopTests` class proving a
+`grep_repo` tool call is actually executed and fed back before `finalize_proposal`, and that
+`read_file`/`list_directory` remain available too. `test_plangen.py`'s `_proposal_response`
+helper updated to the tool-call shape; its own assertions (grouping, side-effect-class handling,
+generated-check enforcement) all continue to pass unchanged, confirming the pivot didn't touch
+anything about how findings get grouped into phases. 117/117 hermetic tests pass (19 new).
+
+**Live-validated against the real repo, not just hermetically -- and this is the actual
+evidence the redesign generalizes rather than just moving the hardcoding somewhere else.**
+Regenerated the plan from the same real `alloy-mvc-template` audit that produced last run's
+scope-conflict escalation, with the new research-capable generator, `gpt-5.6-sol`, no changes to
+`analyzer.py` at all. Result: phase-3's `declared_scope` now includes both `.cshtml` files the
+previous run's implementer had tried (and failed, fail-closed) to touch --
+`Views/Register/Index.cshtml` and `Views/Shared/Layouts/_Root.cshtml` -- found by the model's own
+`grep_repo` search, not by any enumerated file-type list. It also correctly did **not** pull in
+the `Web.Debug.config`/`Web.Release.config` transform files the previous implementer attempt had
+also touched -- those plausibly belong to phase-4 (config modernization) rather than phase-3
+(API removal), so this proposal may be more precisely scoped than the one that escalated, not
+merely broader. Cost: ~117k input / ~3.8k output tokens, ~$0.55 -- meaningfully more than the
+non-research generation (~$0.09), the expected tradeoff of letting the model spend rounds
+investigating rather than proposing from findings alone; the earlier `BudgetedProvider` default
+of 50k tokens for a whole 4-group generation batch was too tight for this and needed raising to
+400k for the live run (not a bug, just evidence the default needs revisiting for the research
+path specifically).
+
+**Not yet done**: a full execution run of this newly-generated plan (i.e. a fourth real Phase F
+attempt, with the implementer actually writing phase-3's remediation against the now-corrected
+scope) -- the plan alone is strong, direct evidence the research loop works as intended, but
+whether phase-3 now completes without escalating is a separate question this session stopped
+short of spending more real money to answer, pending a check-in with the user first. Total live
+spend today across the whole session: ~$1.2 (roughly $0.65 from the third Phase F run's sequence,
+~$0.55 from this entry's plan-generation validation).
+
+**What remains exactly as built, untouched by this entry**: the grouping logic in `plangen.py`
+(category + path-overlap, `PLAN-2`'s v1 lexical scope) -- the pivot has now touched *how a
+group's phase gets authored* twice (once to replace templates, once to add research) without
+ever touching *how findings get grouped into groups* at all. `INTEGRITY-3`'s scope enforcement,
+`QA-2`'s exit-code verdict derivation, and the single `APPROVAL-1` gate are all unaffected --
+whatever the research loop proposes is still just an input to the same unmodified governance,
+reviewed by the operator before anything executes.
+
+**To resume cold**: read this entry, then decide with the user whether to spend a fourth live
+Phase F execution run (now against the research-informed plan) or move to other open work.

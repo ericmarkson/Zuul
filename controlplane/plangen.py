@@ -46,18 +46,21 @@ def _component_for(finding: dict, project_dirs: set[str]) -> str:
     return best or "(repo-root)"
 
 
-def generate_phases(findings_document: dict, model_provider: ModelProvider, check_set: list[dict]) -> tuple[list[dict], list[str]]:
+def generate_phases(findings_document: dict, model_provider: ModelProvider, check_set: list[dict], max_output_tokens: int = 4000, max_tool_rounds: int = 8) -> tuple[list[dict], list[str]]:
     """Returns (phases, dropped_finding_ids). A finding with no remediation_tag is
     informational -- there is nothing to group it into a phase for -- and is dropped from the
     plan, but never silently: its id is returned so the caller can record it, matching the
     project's own rule that nothing gets skipped without a trace (AUDIT-1's FINDING_DISCARDED
     precedent, even though this is a different case -- informational, not invalid).
 
-    Each group gets exactly one `plangen_llm.propose_phase` model call. The proposal's
-    `additional_scope` is unioned into the phase's `declared_scope` alongside the group's own
-    `affected_paths` -- so the model is actually *permitted* to create what it proposes, not just
-    told to -- and any proposed checks are appended to the plan's default check set (PLAN-5)."""
+    Each group gets one `plangen_llm.propose_phase` research-and-propose loop, with read-only
+    access to the actual `target_repo` the findings document names, so a mis-scoped finding isn't
+    the only signal the model has to work from. The proposal's `additional_scope` is unioned into
+    the phase's `declared_scope` alongside the group's own `affected_paths` -- so the model is
+    actually *permitted* to create what it proposes, not just told to -- and any proposed checks
+    are appended to the plan's default check set (PLAN-5)."""
     findings = findings_document["findings"]
+    target_repo = Path(findings_document["target_repo"])
     project_dirs = _project_dirs(findings)
 
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -81,7 +84,7 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
         tag, component = key
         group = groups[key]
 
-        proposal = plangen_llm.propose_phase(model_provider, tag, component, group, check_set)
+        proposal = plangen_llm.propose_phase(model_provider, tag, component, group, check_set, target_repo, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds)
 
         affected_paths = sorted({p for f in group for p in f["affected_paths"]})
         finding_ids = sorted(f["id"] for f in group)
@@ -101,9 +104,9 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
     return phases, dropped
 
 
-def generate_plan(findings_path: Path, model_provider: ModelProvider, check_set: list[dict], run_id_prefix: str) -> dict:
+def generate_plan(findings_path: Path, model_provider: ModelProvider, check_set: list[dict], run_id_prefix: str, max_output_tokens: int = 4000, max_tool_rounds: int = 8) -> dict:
     document = load_findings_file(findings_path)
-    phases, dropped = generate_phases(document, model_provider, check_set)
+    phases, dropped = generate_phases(document, model_provider, check_set, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds)
 
     description = (
         f"Generated {document['generated_at']} from '{document['pack']}' audit of "
@@ -111,8 +114,9 @@ def generate_plan(findings_path: Path, model_provider: ModelProvider, check_set:
         f"{len(phases)} phase(s) from {len(document['findings'])} finding(s). "
         "Every phase's edits are empty by design -- this generator only groups findings into "
         "phases (PLAN-1/PLAN-2 v1 scope, category + declared-path overlap only) and asks a "
-        "model to propose each phase's scope/side-effect-class/checks; literal remediation "
-        "content requires either hand-authoring or an LLM implementer (Phase E)."
+        "model to research the target repo and propose each phase's scope/side-effect-class/"
+        "checks; literal remediation content requires either hand-authoring or an LLM "
+        "implementer (Phase E)."
     )
     if dropped:
         description += f" Findings with no remediation_tag were excluded, not silently: {', '.join(sorted(dropped))}."

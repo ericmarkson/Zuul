@@ -68,7 +68,12 @@ class MockModelProvider:
         return self._next()
 
     def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse:
-        self.tool_calls_log.append(messages)
+        # A snapshot, not the live list -- callers keep mutating (appending to) `messages` after
+        # this call returns, and a stored reference to the same list object would silently make
+        # every earlier log entry retroactively show the FINAL round's state too. Found live by
+        # a stricter equality assertion in test_plangen_llm.py; prior tests only ever used
+        # assertIn against these logs, which happens to pass either way and never caught it.
+        self.tool_calls_log.append(list(messages))
         return self._next()
 
 
