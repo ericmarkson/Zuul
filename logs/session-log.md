@@ -1486,3 +1486,158 @@ generator and the multi-step implementer per the three-point design above, resol
 templates-as-context question along the way (ask, or make the call and say which was picked).
 Re-run Phase F a third time once that lands, to get real evidence the redesign produces better
 phases than the template-matched one did -- same practice as everything else in this project.
+
+---
+
+### 2026-09-20 — Architectural pivot: built, same day, in the very next session
+
+Picked up cold in a fresh session (`/clear` was run), per this file's own "resume cold"
+instructions above. Before writing any code, asked the user directly about the one open question
+this file left unresolved: should the four existing node templates survive as optional few-shot
+context for the new LLM-driven plan generator? The user's own instinct was to delete them despite
+liking them, specifically because keeping something "free" that the system could lean on might
+hide flaws elsewhere -- asked for a second opinion before deciding. Agreed, with a sharper version
+of the same argument: the templates encode exactly the two failure modes Phase F's first run
+diagnosed (the incompatible-api template that could only delete `<Reference>` entries; the config
+template that deleted without replacing), and Phase F's planned third run exists specifically to
+prove the redesign fixes those failures -- feeding them back in as "free" examples risked the
+model re-learning the same bugs from the very context meant to help it, contaminating the one
+test that would show whether the pivot actually worked. Decision: drop entirely, not kept as
+context. `knowledge-packs/dotnet-framework-to-core/templates/` deleted via `git rm`.
+
+**Point 1 built**: `controlplane/plangen_llm.py`. One `provider.complete()` call per finding-group
+(grouping itself untouched -- still `PLAN-2`'s v1 lexical category+path-overlap rule) proposes
+`side_effect_class`, a description, `additional_scope` beyond the findings' own `affected_paths`,
+and optionally one or more checks, each a model-authored Python script. `plangen.py`'s
+`generate_phases`/`generate_plan` now take a `ModelProvider` instead of a `templates_dir` and call
+`plangen_llm.propose_phase` per group; the on-disk plan shape, `PLAN-5`'s per-phase-checks field,
+and `runner.py` are all byte-for-byte unchanged. `materialize_check` wraps a proposed script into
+the same `[sys.executable, "-c", script]` / junit-result-artifact shape the old
+`_expected_output_check` used, so `checks.py`'s exit-code-governs logic (`QA-2`) is exercised
+identically regardless of who authored the script.
+
+**Point 2 built**: `controlplane/llm_implementer.py`'s `request_edits` is now a bounded
+tool-calling loop (`max_tool_rounds`, default 6, plumbed through `Runner.__init__` and a new
+`--llm-max-tool-rounds` CLI flag) instead of one completion call. This required a real interface
+change to `controlplane/model_provider.py`: a new `ModelProvider.complete_with_tools(messages,
+max_output_tokens, tools)` method alongside the existing `complete()`, a new `ToolCall` dataclass,
+and `ModelResponse` gaining an optional `tool_calls` tuple. Chose to add a second method rather
+than changing `complete()`'s signature, specifically so `plangen_llm.py` (which never needs tool
+calling) and every existing hermetic test built around `complete(system_prompt, user_prompt,
+tokens)` stayed untouched -- a narrower, lower-risk change than unifying both call shapes into one
+message-list-based method. `MockModelProvider` grew a parallel `tool_calls_log` (separate from the
+existing `calls` list) and a shared response queue so both call styles can be scripted with the
+same `responses` list. `BudgetedProvider`'s per-phase/per-run token and wall-clock accounting was
+refactored into shared `_pre_call_cap`/`_record_usage` helpers so `complete_with_tools` gets
+identical budget enforcement to `complete`, not a parallel reimplementation. The implementer gets
+exactly two read-only tools, `read_file` and `list_directory`, both confined to the target repo by
+a path-traversal guard (`_resolve_within_repo`, returns `None` rather than raising -- a
+misbehaving tool call becomes an error string fed back to the model, not a crashed run), plus the
+required `finalize_edits` call that ends the loop and is parsed exactly like the old single-shot
+JSON response was. `EXEC-2`'s honesty is preserved: `finalize_edits` is still the only way the
+model produces output, still no file-write tool of its own, still enforced by `INTEGRITY-3`'s
+post-commit scope diff rather than anything preventive here.
+
+**`OpenAIProvider.complete_with_tools`** is the only new code that speaks the OpenAI SDK's actual
+function-calling wire format -- translating this project's generic `{"role", "content",
+"tool_calls"}` / `{"role": "tool", "tool_call_id", "content"}` message shape to and from it, kept
+symmetric with the existing rule that this class is the only module importing the `openai` SDK.
+
+**Test suite rewritten alongside, not bolted on after.** `test_llm_implementer.py` rewritten
+around the tool-calling loop (immediate finalize, a no-tool-call response raising
+`MalformedResponse`, malformed `finalize_edits` arguments, a real `read_file`/`list_directory`
+round-trip proving the tool result actually reaches the next model turn, the path-traversal guard
+refusing an escape attempt rather than raising, and exceeding `max_tool_rounds` without finalizing
+raising cleanly). `test_runner_llm.py` and one spot in `test_runner_resume.py` converted from
+raw-JSON-content mocks to scripted `finalize_edits` tool calls; the two `mock.calls == []`
+assertions that no longer meant anything under the new call path were corrected to
+`mock.tool_calls_log == []`, not left silently checking the wrong list. `test_plangen.py` rewritten
+from template fixtures to `MockModelProvider`-scripted proposals, plus a new
+`ModelAuthoredChecksTests` class replacing the old `ExpectedNewPathsTests` -- same behavioral
+guarantees (a proposed check actually enforces its own condition, run as a real subprocess, not
+just asserted present in the plan), now against model output instead of template lookup. New
+`test_plangen_llm.py` and three new `test_model_provider.py` cases cover the two new modules'
+mechanics directly. **90/90 hermetic tests pass** (up from 64 -- 26 net new, after 4 templated
+tests were deleted and replaced 1:1 with model-authored equivalents), zero live network in the
+suite itself.
+
+**Both changes were then live-validated against the real API, not just hermetically --
+this project's own standing rule, applied to itself again.**
+
+Plan generation: ran `python -m controlplane.cli generate-plan` against the real
+`.scratch/audits/alloy-mvc-template.json` (the same 11-finding audit from Phase C/D) with
+`gpt-5.6-sol`, live. 4 phases, ~3.5k input / ~3.5k output tokens, ~$0.09. Read by hand, not
+trusted on structure alone: phase-3 (`replace-incompatible-api`)'s `declared_scope` now includes
+every actual `.cs` usage-site file the model was given evidence for -- every affected controller,
+`Global.asax.cs`, the `Business/*` initialization and rendering classes, `Views` -- not just the
+`.csproj`'s `<Reference>` list the old template-matched version was confined to. That is a direct,
+concrete fix for Phase F's gap 1, produced by the model reasoning about the specific findings in
+front of it, not by a hardcoded scope rule. Phase-4 (`modernize-config-file`)'s `additional_scope`
+included `appsettings.json` unprompted, and its proposed `modern-config` check verifies both that
+all five legacy config files are gone *and* that `appsettings.json` parses as a JSON object --
+direct evidence against gap 2, again without any `expected_new_paths`-style hardcoding. The
+generated plan artifact was not committed (a smoke-test output, reproducible from the audit file
+already in `.scratch/`, not a project file).
+
+Implementer: ran a one-off scratch plan (not a project file) against the safe synthetic fixture
+with a real `--model-provider openai` invocation, asking for a new `Calculator.Square` method and
+matching test, explicitly prompted to `read_file` the test file first to see how existing tests
+were written. First attempt hit a real API error immediately: `gpt-5.6-sol`'s
+`/v1/chat/completions` endpoint rejects function tools combined with any `reasoning_effort` other
+than `"none"` ("Function tools with reasoning_effort are not supported... use /v1/responses or set
+reasoning_effort to 'none'") -- a bug this project could not have found without actually calling
+the real API with real tools, exactly the kind of thing the hermetic suite structurally cannot
+catch. Fixed by hardcoding `reasoning_effort="none"` inside `complete_with_tools` specifically,
+leaving the plain `complete()` path (plan generation) using the configured value unchanged. Second
+attempt succeeded: `[OK] Phase 'phase-1-add-square-method' committed and verified`, correct,
+idiomatic generated code confirmed by hand against `git diff` (`Square(double x) => x * x` plus a
+matching `RunTest` block following the existing file's own conventions), ~3.4k input / ~1k output
+tokens, ~$0.03. Note honestly recorded rather than glossed over: the model already had the test
+file's content in its first-turn prompt (any file inside the phase's declared scope is always
+shown upfront), so it finalized in one round without actually needing to call `read_file` --
+this run proves the `finalize_edits` path and the reasoning-effort fix against the real API, but
+does not itself exercise a live multi-round tool-call round-trip. That mechanic is covered
+directly by the hermetic `MockModelProvider` suite, not yet by a live call; worth a live check if
+a future session wants that specific gap closed too.
+
+**Documentation updated in the same pass this file's own rule requires** ("Document everything,
+continuously"): `CLAUDE.md` gained a new "ARCHITECTURAL PIVOT BUILT" note directly above the
+now-historical "IN PROGRESS" section (kept, not deleted, per this project's own convention of
+correcting in place rather than quietly rewriting history), a matching decision-log entry, and the
+seven-item "Concrete next steps" list struck through item by item with what actually happened.
+`FRD.md` S14 rewritten from "accepted redesign, not yet built" to "redesign built," with the same
+concrete evidence folded in. `IMPLEMENTATION-PLAN.md`'s Phase D and Phase E section headers
+updated from "done under the OLD design... superseded" to "done, then re-done/extended under the
+pivoted design," with the live-validation evidence appended under each rather than the old content
+rewritten away.
+
+**What remains exactly as built, still not touched by this pivot**: the full governance spine
+(`INTEGRITY-*`, `APPROVAL-*`, `EXEC-6/7`, `BUDGET-*`, `SECRET-1`, `DISCLOSE-1`), `PLAN-5`'s
+per-phase-checks schema capability (unchanged since `b25eda5`, just fed by a different author now),
+and `analyzer.py`'s real usage-site detection (Phase C's business, external/mocked, regardless of
+how Phase D consumes its output).
+
+**State after this entry**: `knowledge-packs/dotnet-framework-to-core/templates/` deleted (`git
+rm`); `controlplane/model_provider.py`, `llm_implementer.py`, `plangen.py`, `runner.py`, `cli.py`
+modified; `controlplane/plangen_llm.py` new; five test files modified, one new
+(`test_plangen_llm.py`). Not yet committed as of this entry -- about to be, alongside this
+session-log entry and the `CLAUDE.md`/`FRD.md`/`IMPLEMENTATION-PLAN.md` updates above. Two live
+model calls were made this session beyond the ones already described above (the reasoning-effort
+bug's first, failing attempt, and the generate-plan smoke test); both scratch artifacts they
+produced (`.scratch/runs/pivot-tool-loop-smoke-*`, the one-off plan file, a stray
+`.scratch-livetest/` directory from a Windows path mistake on the very first attempt) were cleaned
+up as this session's own throwaway output, not project state. Total live-API spend this session:
+~$0.12.
+
+**Not yet done, per this file's own honest accounting**: a real "Phase F, third run" -- all 4
+real phases, real remediation content, against a scratch copy of the real `alloy-mvc-template`
+repo, end to end. That is real money and real time (the first two Phase F attempts cost ~$0.28
+and ~$0.03 respectively) and produces large diffs that need the same by-hand review this project
+has given every prior real run, not a rubber stamp -- flagged to the user as a checkpoint worth
+confirming before spending it, rather than assumed as an automatic continuation of this session.
+`IMPLEMENTATION-PLAN.md`'s Phase B (B1 `ENV-5` spike, B2 private feeds) remains open and lower
+priority, as it was before this pivot started.
+
+**To resume cold**: read `CLAUDE.md`'s "PIVOT BUILT" note and this entry, then decide with the
+user whether to spend the real-money/real-time cost of Phase F's third run now, or move to
+Phase B's remaining spikes first.

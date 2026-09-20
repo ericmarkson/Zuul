@@ -38,6 +38,7 @@ class Runner:
         model_provider: BudgetedProvider | None = None,
         retry_budget: int = 2,
         llm_max_output_tokens: int = 8000,
+        llm_max_tool_rounds: int = 6,
         run_id: str | None = None,
     ):
         self.plan: Plan = load_plan(plan_path)
@@ -47,6 +48,7 @@ class Runner:
         self.model_provider = model_provider
         self.retry_budget = retry_budget
         self.llm_max_output_tokens = llm_max_output_tokens
+        self.llm_max_tool_rounds = llm_max_tool_rounds
         # EXEC-7: a caller-supplied run_id is what makes a run addressable across process
         # restarts. Without one, every invocation is a fresh run by construction and the
         # resume path below is simply never triggered -- which is correct, not a gap: nothing
@@ -145,6 +147,7 @@ class Runner:
             check_commands,
             max_output_tokens=self.llm_max_output_tokens,
             prior_failure_feedback=prior_failure_feedback,
+            max_tool_rounds=self.llm_max_tool_rounds,
         )
         for edit in result.edits:
             dest = self.target_repo / edit.path

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from controlplane.model_provider import BudgetedProvider, MockModelProvider, ModelResponse  # noqa: E402
+from controlplane.model_provider import BudgetedProvider, MockModelProvider, ModelResponse, ToolCall  # noqa: E402
 from controlplane.run_lock import RunLock  # noqa: E402
 from controlplane.runner import Runner  # noqa: E402
 
@@ -89,7 +89,7 @@ class RunnerResumeTests(unittest.TestCase):
         result = second.run()
 
         self.assertFalse(result)
-        self.assertEqual(working_provider.inner.calls, [])  # never even attempted the phase again
+        self.assertEqual(working_provider.inner.tool_calls_log, [])  # never even attempted the phase again
         resume_report_path = first.run_dir / "resume_report.json"
         self.assertTrue(resume_report_path.exists())
         report = json.loads(resume_report_path.read_text(encoding="utf-8"))
@@ -117,8 +117,8 @@ class RunnerResumeTests(unittest.TestCase):
 
     def test_reusing_an_already_completed_run_id_is_refused_not_silently_rerun(self):
         response = ModelResponse(
-            content=json.dumps({"edits": [{"path": "greeting.txt", "content": "hello world"}]}),
-            input_tokens=5, output_tokens=5, latency_seconds=0.01,
+            content="", input_tokens=5, output_tokens=5, latency_seconds=0.01,
+            tool_calls=(ToolCall(id="call-1", name="finalize_edits", arguments={"edits": [{"path": "greeting.txt", "content": "hello world"}]}),),
         )
         provider = BudgetedProvider(
             inner=MockModelProvider(responses=[response]),

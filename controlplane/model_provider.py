@@ -6,6 +6,7 @@ directly outside this module -- runner.py only ever sees the ModelProvider proto
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -20,15 +21,27 @@ class BudgetExceeded(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
 class ModelResponse:
     content: str
     input_tokens: int
     output_tokens: int
     latency_seconds: float
+    # Populated only by complete_with_tools -- the bounded multi-step agentic implementer
+    # (2026-09-20 pivot, point 2). Empty for every plain complete() response.
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 class ModelProvider(Protocol):
     def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse: ...
+
+    def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse: ...
 
 
 @dataclass
@@ -40,15 +53,23 @@ class MockModelProvider:
 
     responses: list[ModelResponse | Exception] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
+    tool_calls_log: list[list[dict]] = field(default_factory=list)
 
-    def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse:
-        self.calls.append((system_prompt, user_prompt))
+    def _next(self) -> ModelResponse:
         if not self.responses:
             raise RuntimeError("MockModelProvider: no more scripted responses")
         result = self.responses.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
+
+    def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse:
+        self.calls.append((system_prompt, user_prompt))
+        return self._next()
+
+    def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse:
+        self.tool_calls_log.append(messages)
+        return self._next()
 
 
 @dataclass
@@ -84,6 +105,57 @@ class OpenAIProvider:
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             latency_seconds=latency,
+        )
+
+    def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse:
+        """Translates this project's generic message/tool-call shape to and from the OpenAI SDK's
+        own schema -- this stays the only module that speaks that schema, per this class's own
+        docstring. An assistant message may carry `tool_calls` (our ToolCall shape); a tool
+        result message carries `tool_call_id` + `content`, same as the OpenAI wire format."""
+        start = time.monotonic()
+        openai_messages = []
+        for m in messages:
+            if m["role"] == "assistant" and m.get("tool_calls"):
+                openai_messages.append({
+                    "role": "assistant",
+                    "content": m.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
+                        }
+                        for tc in m["tool_calls"]
+                    ],
+                })
+            else:
+                openai_messages.append(m)
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=openai_messages,
+            max_completion_tokens=max_output_tokens,
+            # gpt-5.6-sol's chat.completions endpoint rejects function tools combined with any
+            # non-"none" reasoning_effort ("use /v1/responses or set reasoning_effort to 'none'")
+            # -- found live, 2026-09-20, the first time this path was actually exercised against
+            # the real API. self.reasoning_effort still governs the plain complete() path.
+            reasoning_effort="none",
+            tools=tools,
+            tool_choice="auto",
+        )
+        latency = time.monotonic() - start
+        message = response.choices[0].message
+        tool_calls = tuple(
+            ToolCall(id=tc.id, name=tc.function.name, arguments=json.loads(tc.function.arguments or "{}"))
+            for tc in (message.tool_calls or [])
+        )
+        usage = response.usage
+        return ModelResponse(
+            content=message.content or "",
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            latency_seconds=latency,
+            tool_calls=tool_calls,
         )
 
 
@@ -137,7 +209,7 @@ class BudgetedProvider:
     def run_output_tokens(self) -> int:
         return self._run_output_tokens
 
-    def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse:
+    def _pre_call_cap(self, max_output_tokens: int) -> int:
         now = time.monotonic()
         run_elapsed = now - self._run_start
         if run_elapsed > self.wall_clock_limit_per_run_seconds:
@@ -149,9 +221,9 @@ class BudgetedProvider:
         capped_max_output = min(max_output_tokens, self.max_tokens_per_phase - self._phase_tokens)
         if capped_max_output <= 0:
             raise BudgetExceeded("token_phase", self.max_tokens_per_phase, self._phase_tokens)
+        return capped_max_output
 
-        response = self.inner.complete(system_prompt, user_prompt, capped_max_output)
-
+    def _record_usage(self, response: ModelResponse) -> None:
         used = response.input_tokens + response.output_tokens
         self._run_tokens += used
         self._phase_tokens += used
@@ -163,4 +235,14 @@ class BudgetedProvider:
         if self._run_tokens > self.max_tokens_per_run:
             raise BudgetExceeded("token_run", self.max_tokens_per_run, self._run_tokens)
 
+    def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse:
+        capped_max_output = self._pre_call_cap(max_output_tokens)
+        response = self.inner.complete(system_prompt, user_prompt, capped_max_output)
+        self._record_usage(response)
+        return response
+
+    def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse:
+        capped_max_output = self._pre_call_cap(max_output_tokens)
+        response = self.inner.complete_with_tools(messages, capped_max_output, tools)
+        self._record_usage(response)
         return response

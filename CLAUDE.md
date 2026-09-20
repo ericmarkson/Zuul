@@ -36,7 +36,21 @@ was updated to match.
 
 **Credentials**: a real OpenAI API key is configured in `.env` (gitignored, never committed) for `gpt-5.6-sol`. `python -m controlplane.cli run --model-provider openai` uses it; omit that flag for the scripted/no-LLM path. Treat the key as live and billable — it has already made real, if cheap (~$0.03 so far total), API calls.
 
-## ⚠ ARCHITECTURAL PIVOT IN PROGRESS, 2026-09-20 — read this before touching Phase D or E
+## ✅ ARCHITECTURAL PIVOT BUILT, 2026-09-20 (same day as the section below was written)
+
+The redesign this section called for is now built: `controlplane/plangen_llm.py` (LLM-driven
+plan generation, replacing the deleted node-template catalogue) and `llm_implementer.py`'s
+bounded multi-step tool-calling loop (`complete_with_tools`, `read_file`/`list_directory`,
+`finalize_edits`). Both are live-verified against the real API, not just hermetically tested —
+see the 2026-09-20 "pivot built" decision-log entry below for the concrete evidence, including
+two real bugs found and fixed the moment each path first touched the real API. 90/90 hermetic
+tests pass. The templates-as-few-shot-context question below is resolved: **dropped entirely**,
+per the user's own instinct that keeping them risked the model re-learning the exact failure
+modes Phase F found — see the decision log for the fuller argument. The section immediately
+below is kept as-written (not edited down) for the historical record of what was decided and why;
+treat "not yet built" language in it as superseded by this note.
+
+## ⚠ ARCHITECTURAL PIVOT IN PROGRESS, 2026-09-20 — read this before touching Phase D or E (historical — see "PIVOT BUILT" above)
 
 Phase F's first real run (§ above) found two gaps. Fixing them the direct way (extend the
 fixed node-template catalogue with a hardcoded `expected_new_paths` field, synthesize a
@@ -101,18 +115,20 @@ model-authored phase, just not wired to a template anymore.
 under the old architecture — but the next work should replace this path, not add a fifth
 template to it.
 
-**Concrete next steps for a fresh session**:
-1. Re-read this section and the matching `logs/session-log.md` entry in full before writing code.
-2. Design and build the LLM-driven plan generator (likely a new function/module alongside or
-   replacing `plangen.py`'s template-matching core; the per-finding-group grouping logic and the
-   `PhaseSpec.checks` schema already exist and don't need to change).
-3. Extend `llm_implementer.py` for a bounded multi-step tool-calling loop (read-only tools for
-   context; writes still happen only via the existing single "final edits" mechanism `runner.py`
-   already applies and scope-checks).
-4. Resolve the templates-as-context open question above.
-5. Re-run Phase F a third time (`alloy-mvc-template`, same audit, real model) once this lands,
-   to get real evidence the redesign actually produces better phases than the hardcoded one did
-   — same practice as everything else in this project.
+**Concrete next steps (updated 2026-09-20, after the pivot was built — see "PIVOT BUILT" above)**:
+1. ~~Re-read this section...~~ **done.**
+2. ~~Design and build the LLM-driven plan generator...~~ **done — `controlplane/plangen_llm.py`.**
+3. ~~Extend `llm_implementer.py` for a bounded multi-step tool-calling loop...~~ **done —
+   `complete_with_tools` + `read_file`/`list_directory`/`finalize_edits`.**
+4. ~~Resolve the templates-as-context open question above.~~ **done — dropped entirely.**
+5. **Partially done.** Plan generation was re-run for real against the real `alloy-mvc-template`
+   audit (~$0.09) and produced concrete evidence the redesign fixes both of Phase F's original
+   gaps (see the decision-log entry). The implementer's tool-calling loop was live-verified
+   against the real API on the **safe synthetic fixture only** (~$0.03) — not yet run against
+   real remediation content for all 4 real phases end-to-end (a genuine "Phase F, third run").
+   That full run is real money and real time (the first two Phase F attempts cost ~$0.28 and
+   ~$0.03 respectively) and produces large diffs to review — a natural point to check with the
+   user before spending it, rather than assumed as this session's next automatic step.
 6. Only after that: finish `IMPLEMENTATION-PLAN.md` Phase B (B1 `ENV-5` spike, B2 private
    feeds) — independent, lower priority than the pivot above.
 7. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6) — still bears on
@@ -180,6 +196,7 @@ Guardrails:
 - **2026-09-20** – **`EXEC-7` BUILT — Phase E now fully done.** Same day, follow-up pass. `controlplane/run_lock.py`: exclusive lock keyed to run id via real OS-native advisory locking (`msvcrt`/`fcntl`), not a marker file, so a genuine process crash releases it automatically. `controlplane/resume.py`: a run id whose event log has events but no terminal one halts with a `resume_report.json` (last committed phase, run branch head, working-tree state) rather than auto-resuming or auto-resetting — resuming stays an operator decision in v1. `Runner`/CLI gained `--run-id` so a run has a stable identity to resume into. Verified with a real simulated crash (`MockModelProvider` scripted to raise mid-phase), not just isolated pieces: a second `Runner` against the same run id correctly detects incomplete state and never re-attempts the phase; a manually-held lock correctly refuses a concurrent `Runner`; reusing a completed run id is refused. FRD §6 criteria 6/9/11/13 all pass now. 64/64 hermetic tests (31 new across both Phase E passes).
 - **2026-09-20** – **PHASE F, FIRST RUN — real findings, not a clean pass.** User confirmed `alloy-mvc-template`'s third-party disclosure eligibility explicitly (AskUserQuestion), after being shown "finish Phase E" and "start Phase F" were the same next action. Ran all 4 real audit-derived phases live against a scratch copy (original repo confirmed untouched after) with `gpt-5.6-sol`: ~$0.28, all 4 "committed and verified" — but `dotnet build` failed identically before and after every phase (no MSBuild in this environment), so verification had nothing to measure against. Reading the actual diffs (not trusting "OK"): phase-1 (SDK-style retarget) was genuinely good and grounded — spot-checked package versions matched the original file's literal `HintPath` strings, not hallucinated; phase-2 (packages.config migration) was good; **phase-3 (incompatible-api) could only delete `<Reference>` entries, since its declared scope excluded the actual `.cs` usage sites** — the only in-scope move was borderline harmful; **phase-4 (config modernization) deleted 543 lines across 5 config files and created none of the promised `appsettings.json` replacement** — a real "helpfully reforms the repository" failure (§5a's named threat) that the pipeline reported as verified, since `QA-5`'s delta check answers "did the build get worse," not "did this phase do what it claimed." Two real, evidence-earned gaps found and documented, neither fixed yet pending direction: incompatible-api scope generation needs real usage sites, and there's no requirement yet for detecting a phase that didn't do what it said. Full detail in `logs/session-log.md` and `IMPLEMENTATION-PLAN.md` Phase F.
 - **2026-09-20** – **ARCHITECTURAL PIVOT: dynamic (LLM-driven) plan generation + multi-step agentic implementer, replacing the fixed node-template catalogue.** User rejected the direct Phase F fix's shape (a hardcoded `expected_new_paths` field synthesizing a hardcoded check script) as building the wrong kind of system — the project should dynamically generate steps and runtime agents from an audit, not match findings against a fixed template catalogue. Boundary clarified: audit generation (Phase C/knowledge pack) is 100% external/mocked, not part of "our project," which starts at the audit and owns plan generation + agent execution + verification. Agreed redesign: (1) plan generation becomes one model call per finding-group proposing scope/side-effect-class/checks, still frozen at the same approval gate; (2) the per-phase implementer becomes a bounded multi-step tool-calling agent instead of one completion call; (3) verification stays deterministic — `QA-2` is explicitly non-negotiable, an LLM verdict must never be the pass/fail gate. Not yet built — session usage ran out. Full detail, including what's still reusable (`analyzer.py` usage-site detection, the new per-phase-checks schema capability) versus superseded (`plangen.py`'s template-matching path), in this file's "Next action" section above and in `logs/session-log.md`.
+- **2026-09-20** – **ARCHITECTURAL PIVOT BUILT, same day.** Templates-as-few-shot-context question resolved: **dropped entirely** — user's own instinct, confirmed by reasoning through it together, that keeping the four templates as "free" context risked the model re-learning the exact failure modes Phase F found (the incompatible-api template that could only delete `<Reference>` entries; the config template that deleted without replacing), contaminating the very evidence this pivot exists to produce. `knowledge-packs/dotnet-framework-to-core/templates/` deleted; `plangen.py`'s `load_templates` path replaced, not extended. **Point 1 built**: `controlplane/plangen_llm.py`, one `provider.complete()` call per finding-group proposing `side_effect_class`/description/`additional_scope`/checks (a model-authored Python script per check, still executed as a subprocess with exit code governing — `QA-2` untouched). **Point 2 built**: `llm_implementer.py`'s `request_edits` is now a bounded tool-calling loop via a new `ModelProvider.complete_with_tools` (`read_file`/`list_directory`, path-traversal-guarded, then a required `finalize_edits` call); `BudgetedProvider` wraps it with the same budget accounting as `complete()`. **Both live-validated against the real API, not just hermetically** (90/90 hermetic tests pass, up from 64): plan generation run for real against the real `alloy-mvc-template` audit (~$0.09) produced a phase-3 `declared_scope` that correctly includes the actual `.cs` usage-site files and a phase-4 that correctly proposes `appsettings.json` plus a check verifying it's valid JSON and the legacy configs are gone — concrete, unprompted evidence against both of Phase F's original gaps. The tool-calling implementer, run for real against the safe synthetic fixture (~$0.03), surfaced and fixed a real bug the instant it touched the real API: `gpt-5.6-sol`'s chat-completions endpoint rejects function tools combined with any non-`"none"` `reasoning_effort`. Full detail in `IMPLEMENTATION-PLAN.md`'s Phase D/E sections and `FRD.md` §14.
 
 ## Key references
 - `FRD.md` (this repo) – **the primary spec.** Tool-agnostic functional requirements, each tagged **[v1] / [v2] / [won't-do]**. §5 threat model, §7 out of scope, §8 spikes to run, §9 traceability, §10 known open issues, §11 what the rightsizing cut and why.

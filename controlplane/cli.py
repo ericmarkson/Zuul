@@ -1,7 +1,7 @@
 """CLI entrypoint. Usage:
 
     python -m controlplane.cli run --plan plans/sample-plan.json
-    python -m controlplane.cli generate-plan --findings <findings.json> --templates <dir> \\
+    python -m controlplane.cli generate-plan --findings <findings.json> \\
         --check-command dotnet build Foo.sln --run-id-prefix my-run --out plans/generated.json
 """
 
@@ -46,19 +46,24 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--reasoning-effort", default="low")
     run_parser.add_argument("--retry-budget", type=int, default=2, help="EXEC-3: bounded retries per phase")
     run_parser.add_argument("--llm-max-output-tokens", type=int, default=8000)
+    run_parser.add_argument("--llm-max-tool-rounds", type=int, default=6, help="bounded multi-step tool-calling loop for the LLM implementer")
     run_parser.add_argument("--max-tokens-per-phase", type=int, default=20000, help="BUDGET-1")
     run_parser.add_argument("--max-tokens-per-run", type=int, default=100000, help="BUDGET-1")
     run_parser.add_argument("--wall-clock-per-phase-seconds", type=float, default=180, help="BUDGET-1")
     run_parser.add_argument("--wall-clock-per-run-seconds", type=float, default=1800, help="BUDGET-1")
     run_parser.add_argument("--run-id", default=None, help="EXEC-7: reuse a run id to make this run addressable/resumable across process restarts. Omit for a fresh, always-new run.")
 
-    gen_parser = subparsers.add_parser("generate-plan", help="generate a plan.json from a findings file (PLAN-1 path a)")
+    gen_parser = subparsers.add_parser("generate-plan", help="generate a plan.json from a findings file via one LLM call per finding-group (PLAN-1 path a)")
     gen_parser.add_argument("--findings", type=Path, required=True)
-    gen_parser.add_argument("--templates", type=Path, required=True)
     gen_parser.add_argument("--check-id", default="build")
     gen_parser.add_argument("--check-command", nargs="+", required=True)
     gen_parser.add_argument("--run-id-prefix", required=True)
     gen_parser.add_argument("--out", type=Path, required=True)
+    gen_parser.add_argument("--model", default="gpt-5.6-sol")
+    gen_parser.add_argument("--reasoning-effort", default="low")
+    gen_parser.add_argument("--llm-max-output-tokens", type=int, default=4000)
+    gen_parser.add_argument("--max-tokens-total", type=int, default=50000, help="BUDGET-1, applied to this whole generation batch")
+    gen_parser.add_argument("--wall-clock-seconds", type=float, default=600, help="BUDGET-1, applied to this whole generation batch")
 
     args = parser.parse_args(argv)
 
@@ -89,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             model_provider=model_provider,
             retry_budget=args.retry_budget,
             llm_max_output_tokens=args.llm_max_output_tokens,
+            llm_max_tool_rounds=args.llm_max_tool_rounds,
             run_id=args.run_id,
         )
         ok = runner.run()
@@ -103,6 +109,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     if args.command == "generate-plan":
+        _load_dotenv(REPO_ROOT / ".env")
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            print("error: OPENAI_API_KEY not set (checked .env and the environment)", file=sys.stderr)
+            return 1
+        from controlplane.model_provider import BudgetedProvider, OpenAIProvider
+
+        model_provider = BudgetedProvider(
+            inner=OpenAIProvider(api_key=api_key, model=args.model, reasoning_effort=args.reasoning_effort),
+            max_tokens_per_phase=args.max_tokens_total,
+            max_tokens_per_run=args.max_tokens_total,
+            wall_clock_limit_per_phase_seconds=args.wall_clock_seconds,
+            wall_clock_limit_per_run_seconds=args.wall_clock_seconds,
+        )
+
         check_set = [{
             "id": args.check_id,
             "command": args.check_command,
@@ -111,11 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         }]
         plan = plangen.generate_plan(
             findings_path=args.findings,
-            templates_dir=args.templates,
+            model_provider=model_provider,
             check_set=check_set,
             run_id_prefix=args.run_id_prefix,
         )
         plangen.write_plan_file(args.out, plan)
+
+        from controlplane.model_provider import estimate_cost_usd
+
+        cost = estimate_cost_usd(model_provider.run_input_tokens, model_provider.run_output_tokens)
+        print(f"model tokens: {model_provider.run_input_tokens} in / {model_provider.run_output_tokens} out (~${cost:.4f})")
         dropped = plan["_generated_from"]["dropped_informational_findings"]
         print(f"{len(plan['phases'])} phase(s) generated from {args.findings}")
         if dropped:

@@ -125,17 +125,20 @@ it in the event log at run time is a Phase D/E integration point, not done here)
   live Phase A run were re-verified afterward — the plan loader was never touched and behaves
   identically. 9/9 hermetic analyzer tests pass, zero network.
 
-## Phase D — Audit → plan generation — *was Phase 2* — **done under the OLD design, 2026-09-20; superseded by the pivot below, same day**
+## Phase D — Audit → plan generation — *was Phase 2* — **done, then re-done under the pivoted design, 2026-09-20**
 
-**⚠ Read `CLAUDE.md`'s "ARCHITECTURAL PIVOT IN PROGRESS" section before building anything
-further in this phase.** Everything below this line describes the template-matching design as
-it was built and as it stood when Phase F's first run found two gaps. That design worked and is
-tested (`b25eda5`), but the user rejected its *shape* — a fixed node-template catalogue a
-finding must match — as the wrong kind of system, and asked for plan generation to become
-dynamic (one model call per finding-group proposing scope/side-effect-class/checks) instead.
-That redesign is accepted but **not yet built** as of this entry. Do not extend the template
-catalogue (e.g. a fifth template file) — replace its matching core instead. The per-finding-
-group *grouping* logic below (category + path-overlap) is unaffected and stays.
+**The pivot described in `CLAUDE.md`'s "ARCHITECTURAL PIVOT IN PROGRESS" section is now built.**
+The fixed node-template catalogue (`knowledge-packs/dotnet-framework-to-core/templates/`) and
+`plangen.py`'s `load_templates`/template-matching core (`b25eda5`) are deleted, not extended.
+`controlplane/plangen_llm.py` is new: one model call per finding-group (grouped by the same
+lexical category + path-overlap rule as before, unaffected by this pivot) proposes that phase's
+`side_effect_class`, description, any scope beyond the findings' own `affected_paths`, and
+whatever Python-script check(s) would actually prove that specific remediation happened.
+`plangen.py` calls it in place of the old template lookup; the on-disk plan shape, the single
+approval gate, and `runner.py` are all unchanged. The four templates were deliberately **not**
+kept as few-shot context, on the reasoning that they encoded exactly the failure modes Phase F's
+first run found (see below) and would risk the model re-learning them from the "free" examples —
+recorded as the resolution to the "open, not yet decided" question in `CLAUDE.md`.
 **Goal**: turn any findings file into a concrete plan of the same shape Phase A already executes.
 
 Covers FRD v1: `PLAN-1` path (a). **Grouping is category (here: remediation tag) + declared-path
@@ -169,16 +172,50 @@ generated plan's `_generated_from.dropped_informational_findings` field.
   rewrite, then config modernization — a defensible real migration order.
 - **Not built**: any actual remediation content. This was always Phase E's job, and the
   generator says so in every plan it produces (`plan_description` states this explicitly).
+- **Re-validated live against the real target after the pivot, 2026-09-20**: ran
+  `python -m controlplane.cli generate-plan` against the real `alloy-mvc-template` audit
+  (11 findings) with `gpt-5.6-sol` — 4 phases, ~3.5k input / ~3.5k output tokens, ~$0.09. Read
+  by hand, not just structurally validated: phase-3 (`replace-incompatible-api`)'s
+  `declared_scope` now includes the actual `.cs` usage-site files (every affected controller,
+  `Global.asax.cs`, `Business/*`, `Views`) rather than being confined to the `.csproj`'s
+  `<Reference>` list — direct evidence against Phase F's gap 1 below. Phase-4
+  (`modernize-config-file`)'s proposed `additional_scope` included `appsettings.json` unprompted,
+  and its proposed check verifies both that the legacy config files are gone *and* that
+  `appsettings.json` parses as a JSON object — direct evidence against Phase F's gap 2. Neither
+  fix is hardcoded; both came from the model reasoning about the specific findings in front of
+  it. Plan artifact not committed (a smoke-test output, not a project file); the generation
+  command is reproducible from `.scratch/audits/alloy-mvc-template.json`.
 
-## Phase E — Agentic implementer — *was Phase 4* — **done under the OLD design, 2026-09-20; extend per the pivot below**
+## Phase E — Agentic implementer — *was Phase 4* — **done, then extended into a tool-calling agent, 2026-09-20**
 
-**⚠ Same pivot as Phase D above — see `CLAUDE.md`.** The single-completion-call implementer
-described below is built, tested, and was live-verified twice (the safe fixture, then the real
-`alloy-mvc-template` repo). It is not wrong, but it is step one, not the end state: the accepted
-redesign extends this into a bounded, multi-step, tool-calling agent (can read additional files
-for context before finalizing an edit) rather than one prompt/response. Everything else about
-this phase — the budgets, the `EXEC-3` retry loop, `EXEC-7`'s crash/resume, the frozen
-declared-scope enforcement via `INTEGRITY-3` — is unaffected and stays exactly as built.
+**The pivot's point 2 is now built.** `controlplane/llm_implementer.py`'s `request_edits` is no
+longer one completion call — it runs a bounded loop (`max_tool_rounds`, default 6, plumbed
+through `Runner`/CLI as `--llm-max-tool-rounds`) via a new `ModelProvider.complete_with_tools`
+method, giving the model two read-only context tools (`read_file`, `list_directory`, confined to
+the target repo by a path-traversal guard) before it must call `finalize_edits` exactly once to
+submit its proposed full-file-content edits. `EXEC-2` is unaffected: `finalize_edits` is the only
+way to produce output, the model still gets no file-write tool of its own, and
+`INTEGRITY-3`'s post-commit scope diff is still the actual enforcement. `BudgetedProvider` wraps
+`complete_with_tools` with the identical per-phase/per-run budget accounting as plain `complete`
+(refactored into shared `_pre_call_cap`/`_record_usage` helpers). `OpenAIProvider.complete_with_tools`
+is the only place that translates this project's generic message/tool-call shape to and from the
+OpenAI SDK's own function-calling schema.
+- **A second real bug found and fixed the first time this path touched the real API**:
+  `gpt-5.6-sol`'s `/v1/chat/completions` endpoint rejects function tools combined with any
+  `reasoning_effort` other than `"none"` ("Function tools with reasoning_effort are not
+  supported... use /v1/responses or set reasoning_effort to 'none'"). `complete_with_tools` now
+  hardcodes `reasoning_effort="none"` for tool-calling requests specifically; the plain
+  `complete()` path (plan generation) is unaffected and still honors the configured value.
+- **Live-verified against the real API and the real model**, safe synthetic fixture only: asked
+  for a new `Calculator.Square` method plus a matching test, explicitly prompted to `read_file`
+  the test file first. The model instead finalized directly in one round — it already had that
+  file's content in its first-turn prompt (the file was inside the phase's own declared scope,
+  which is always shown upfront) so there was nothing left to read — and produced correct,
+  idiomatic code verified by hand against `git diff`. This proves the `finalize_edits` path and
+  the reasoning-effort fix against the real API; it does **not** exercise an actual multi-round
+  `read_file` round-trip live (that mechanic is covered directly by the hermetic
+  `MockModelProvider` suite in `test_llm_implementer.py`, not yet by a live call). ~3.4k input /
+  ~1k output tokens, ~$0.03.
 **Goal**: replace Phase A's scripted implementer with a model, and only that.
 
 Covers FRD v1: `EXEC-1`, `EXEC-2`, `EXEC-3`, `EXEC-7`, `BUDGET-1`, `BUDGET-2`, `SECRET-1`,

@@ -13,11 +13,19 @@ from controlplane.model_provider import (  # noqa: E402
     BudgetExceeded,
     MockModelProvider,
     ModelResponse,
+    ToolCall,
 )
 
 
 def _response(text: str, in_tokens: int = 10, out_tokens: int = 10) -> ModelResponse:
     return ModelResponse(content=text, input_tokens=in_tokens, output_tokens=out_tokens, latency_seconds=0.01)
+
+
+def _tool_response(name: str, arguments: dict, in_tokens: int = 10, out_tokens: int = 10) -> ModelResponse:
+    return ModelResponse(
+        content="", input_tokens=in_tokens, output_tokens=out_tokens, latency_seconds=0.01,
+        tool_calls=(ToolCall(id="call-1", name=name, arguments=arguments),),
+    )
 
 
 class MockProviderTests(unittest.TestCase):
@@ -40,6 +48,14 @@ class MockProviderTests(unittest.TestCase):
         mock = MockModelProvider(responses=[_response("not valid json at all")])
         result = mock.complete("sys", "u", 100)
         self.assertEqual(result.content, "not valid json at all")
+
+    def test_complete_with_tools_returns_scripted_tool_calls_and_logs_messages(self):
+        mock = MockModelProvider(responses=[_tool_response("read_file", {"path": "a.py"})])
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "u"}]
+        result = mock.complete_with_tools(messages, 100, tools=[])
+        self.assertEqual(result.tool_calls[0].name, "read_file")
+        self.assertEqual(result.tool_calls[0].arguments, {"path": "a.py"})
+        self.assertEqual(mock.tool_calls_log, [messages])
 
 
 class BudgetedProviderTests(unittest.TestCase):
@@ -110,6 +126,27 @@ class BudgetedProviderTests(unittest.TestCase):
         budgeted.complete("sys", "u", max_output_tokens=1_000_000)
         # nothing raised -- the wrapper silently capped the *requested* ceiling, it did not
         # trust the caller's number, and the mock's actual usage still stayed within budget
+
+    def test_complete_with_tools_shares_the_same_budget_accounting_as_complete(self):
+        mock = MockModelProvider(responses=[_tool_response("finalize_edits", {"edits": []}, 15, 15)])
+        budgeted = BudgetedProvider(
+            inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000,
+            wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60,
+        )
+        result = budgeted.complete_with_tools([{"role": "user", "content": "u"}], 100, tools=[])
+        self.assertEqual(result.tool_calls[0].name, "finalize_edits")
+        self.assertEqual(budgeted.run_tokens_used, 30)
+        self.assertEqual(budgeted.phase_tokens_used, 30)
+
+    def test_complete_with_tools_refuses_before_calling_inner_when_budget_already_exhausted(self):
+        mock = MockModelProvider(responses=[_tool_response("read_file", {"path": "a"})])
+        budgeted = BudgetedProvider(
+            inner=mock, max_tokens_per_phase=0, max_tokens_per_run=1000,
+            wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60,
+        )
+        with self.assertRaises(BudgetExceeded):
+            budgeted.complete_with_tools([{"role": "user", "content": "u"}], 100, tools=[])
+        self.assertEqual(mock.tool_calls_log, [])
 
 
 if __name__ == "__main__":

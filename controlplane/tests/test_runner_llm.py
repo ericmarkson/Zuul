@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from controlplane.eventlog import EventType  # noqa: E402
-from controlplane.model_provider import BudgetedProvider, MockModelProvider, ModelResponse  # noqa: E402
+from controlplane.model_provider import BudgetedProvider, MockModelProvider, ModelResponse, ToolCall  # noqa: E402
 from controlplane.runner import Runner  # noqa: E402
 
 CHECK_SCRIPT = (
@@ -24,9 +24,15 @@ CHECK_SCRIPT = (
 )
 
 
-def _response(payload: dict | str, in_tok: int = 10, out_tok: int = 10) -> ModelResponse:
-    content = payload if isinstance(payload, str) else json.dumps(payload)
-    return ModelResponse(content=content, input_tokens=in_tok, output_tokens=out_tok, latency_seconds=0.01)
+def _finalize(edits: list[dict], in_tok: int = 10, out_tok: int = 10) -> ModelResponse:
+    return ModelResponse(
+        content="", input_tokens=in_tok, output_tokens=out_tok, latency_seconds=0.01,
+        tool_calls=(ToolCall(id="call-1", name="finalize_edits", arguments={"edits": edits}),),
+    )
+
+
+def _malformed(content: str = "not calling any tool") -> ModelResponse:
+    return ModelResponse(content=content, input_tokens=10, output_tokens=10, latency_seconds=0.01)
 
 
 class RunnerLlmTests(unittest.TestCase):
@@ -77,7 +83,7 @@ class RunnerLlmTests(unittest.TestCase):
 
     def test_llm_phase_succeeds_on_first_attempt(self):
         plan_path = self._write_plan("hello")
-        mock = MockModelProvider(responses=[_response({"edits": [{"path": "greeting.txt", "content": "hello world"}]})])
+        mock = MockModelProvider(responses=[_finalize([{"path": "greeting.txt", "content": "hello world"}])])
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
         runner = self._runner(plan_path, budgeted)
 
@@ -90,8 +96,8 @@ class RunnerLlmTests(unittest.TestCase):
     def test_malformed_response_retries_then_succeeds(self):
         plan_path = self._write_plan("hello")
         mock = MockModelProvider(responses=[
-            _response("not valid json"),
-            _response({"edits": [{"path": "greeting.txt", "content": "hello world"}]}),
+            _malformed(),
+            _finalize([{"path": "greeting.txt", "content": "hello world"}]),
         ])
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
         runner = self._runner(plan_path, budgeted)
@@ -106,9 +112,9 @@ class RunnerLlmTests(unittest.TestCase):
         retry_budget + 1 attempts, this must escalate as validation-loop, not loop forever."""
         plan_path = self._write_plan("hello world")
         mock = MockModelProvider(responses=[
-            _response({"edits": [{"path": "greeting.txt", "content": "broken"}]}),
-            _response({"edits": [{"path": "greeting.txt", "content": "still broken"}]}),
-            _response({"edits": [{"path": "greeting.txt", "content": "still broken again"}]}),
+            _finalize([{"path": "greeting.txt", "content": "broken"}]),
+            _finalize([{"path": "greeting.txt", "content": "still broken"}]),
+            _finalize([{"path": "greeting.txt", "content": "still broken again"}]),
         ])
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
         runner = self._runner(plan_path, budgeted)
@@ -118,15 +124,15 @@ class RunnerLlmTests(unittest.TestCase):
         escalated = [e for e in events if e["event_type"] == "ESCALATED"]
         self.assertEqual(len(escalated), 1)
         self.assertEqual(escalated[0]["category"], "validation-loop")
-        self.assertEqual(len(mock.calls), 3)  # retry_budget=2 -> 3 total attempts, then stop
+        self.assertEqual(len(mock.tool_calls_log), 3)  # retry_budget=2 -> 3 total attempts, then stop
 
     def test_phase_reset_between_attempts_does_not_leak_the_bad_edit(self):
         """INTEGRITY-8: a file-only phase resets to its pre-attempt baseline before retrying --
         the failed attempt's content must not still be present once a later attempt succeeds."""
         plan_path = self._write_plan("hello world")
         mock = MockModelProvider(responses=[
-            _response({"edits": [{"path": "greeting.txt", "content": "broken"}]}),
-            _response({"edits": [{"path": "greeting.txt", "content": "hello world"}]}),
+            _finalize([{"path": "greeting.txt", "content": "broken"}]),
+            _finalize([{"path": "greeting.txt", "content": "hello world"}]),
         ])
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
         runner = self._runner(plan_path, budgeted)
@@ -137,7 +143,7 @@ class RunnerLlmTests(unittest.TestCase):
 
     def test_budget_exceeded_escalates_immediately_without_retry(self):
         plan_path = self._write_plan("hello")
-        mock = MockModelProvider(responses=[_response({"edits": [{"path": "greeting.txt", "content": "hello world"}]})])
+        mock = MockModelProvider(responses=[_finalize([{"path": "greeting.txt", "content": "hello world"}])])
         # zero phase budget -> the pre-call guard (capped_max_output <= 0) must refuse before
         # ever reaching the model, not just detect an overage after a call returns.
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=0, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
@@ -148,19 +154,19 @@ class RunnerLlmTests(unittest.TestCase):
         self.assertTrue(any(e["event_type"] == "BUDGET_EXCEEDED" for e in events))
         escalated = [e for e in events if e["event_type"] == "ESCALATED"]
         self.assertEqual(escalated[0]["category"], "budget-exceeded")
-        self.assertEqual(mock.calls, [])  # the wrapper must refuse before ever calling the model
+        self.assertEqual(mock.tool_calls_log, [])  # the wrapper must refuse before ever calling the model
 
     def test_budget_overage_detected_after_a_call_that_used_more_than_requested(self):
         """The complementary case: a small-but-nonzero phase budget permits a capped call, and
         the wrapper still catches the overage once real usage comes back, rather than trusting
         the cap was honored."""
         plan_path = self._write_plan("hello")
-        mock = MockModelProvider(responses=[_response({"edits": [{"path": "greeting.txt", "content": "hello world"}]}, in_tok=10, out_tok=10)])
+        mock = MockModelProvider(responses=[_finalize([{"path": "greeting.txt", "content": "hello world"}])])
         budgeted = BudgetedProvider(inner=mock, max_tokens_per_phase=1, max_tokens_per_run=1000, wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60)
         runner = self._runner(plan_path, budgeted)
 
         self.assertFalse(runner.run())
-        self.assertEqual(len(mock.calls), 1)  # the call did happen this time
+        self.assertEqual(len(mock.tool_calls_log), 1)  # the call did happen this time
         events = runner.event_log.read_all()
         escalated = [e for e in events if e["event_type"] == "ESCALATED"]
         self.assertEqual(escalated[0]["category"], "budget-exceeded")
