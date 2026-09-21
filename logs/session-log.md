@@ -2368,3 +2368,54 @@ implementer runs against them -- that's the next real-money decision point, not 
 against one of the MCP-grounded plans (`alloy-mvc-template-mcp2-plan.json`) to see if the
 grounding improves real migration outcomes, same as every other feature this session has been
 validated end-to-end eventually.
+
+---
+
+### 2026-09-21 — First execution of an MCP-grounded plan: phase 3 gets a real, passing behavioral test for the first time; phase 4's own good instinct correctly halts on scope
+
+User said "run it." Executed `alloy-mvc-template-mcp2-plan.json` (the MCP-grounded plan from the
+previous entry) against a fresh scratch copy of the real repo, `gpt-5.6-sol`, ~$0.54.
+
+**Phases 1, 2, and 3 all committed and verified on the first attempt** -- phase 3
+(`replace-incompatible-api`, the phase every prior real run struggled with: deletion masquerading
+as migration, then a hollow stub, then multiple retry attempts) succeeded outright this time.
+Investigated why by hand rather than trusting "verified": **the MCP-grounded researcher had
+authored a genuine behavioral check for phase 3** -- `check_fixtures` containing a real xUnit
+test project (`Alloy.Mvc.Template.Migration.Tests.csproj`, referencing
+`Microsoft.AspNetCore.Mvc.Testing`, `xunit`, and a `ProjectReference` to the actual app) and a
+real integration test (`MigratedSiteTests.cs`) using `WebApplicationFactory<Program>` to spin up
+the actual migrated application and assert on real HTTP responses and rendered HTML content --
+`GET /` returns 200 with real page content (and explicitly asserts the response is *not* a
+placeholder "Hello world"), `GET /search?q=alloy` returns a working, non-404/500 response. This
+is exactly the capability built two entries ago (the generic `command`/`supporting_files` check
+schema) that the model had previously been unwilling to attempt against this same repo with no
+existing test infrastructure -- this time, grounded by real Microsoft documentation, it did. The
+check (`dotnet test verification/.../....csproj --no-restore`) genuinely ran and genuinely passed
+against the real migrated code, not a stub -- a hollow controller could not have passed this the
+way it passed the old regex-based survival checks.
+
+**Phase 4 escalated on a real, correct `INTEGRITY-3` scope-conflict** -- not a bug. The
+implementer tried to create `Business/Configuration/AlloyOptions.cs`, a well-formed strongly-typed
+Options-pattern class (`SectionName`, typed properties for every setting the phase's own
+description named), directly implementing what the researcher's own MCP-fetched guidance said to
+do ("bind related values through strongly typed options where consumed"). But that specific new
+file path was never added to phase-4's `additional_scope` at generation time, so `INTEGRITY-3`'s
+unmodified post-commit scope diff caught it and halted fail-closed, exactly as designed -- even
+though the write itself was arguably the right call. This is real, useful evidence of a subtler
+gap than any found before: grounding can make the researcher's own *description* imply more than
+its *scope prediction* delivers, and nothing currently reconciles the two. Not investigated
+further or fixed this entry -- recorded as found, per this project's evidence-earned-not-preemptive
+rule. Real repo confirmed untouched throughout.
+
+**What remains exactly as built, untouched by this entry**: the MCP mechanism, the local research
+loop, `INTEGRITY-3`, `QA-2`, the `APPROVAL-1` gate. No code changed. Total live spend this entry:
+~$0.54; total across today's whole MCP thread (generation + execution): ~$1.89.
+
+**To resume cold**: read this entry. Two real, evidence-earned threads are now open, neither
+urgent: (1) whether the researcher's `additional_scope` prediction should be made more robust
+against its own description implying files it didn't list -- perhaps by asking it to double-check
+consistency between the two before finalizing, though this needs its own design thought, not a
+quick patch; (2) whether phase 3's real, passing behavioral test is itself evidence the
+behavioral-check ceiling from two entries ago ("the model won't invent test scaffolding without
+grounding") is now *resolved* by the MCP promotion, rather than merely worked around -- worth
+testing again on a future run before treating it as confirmed.
