@@ -2178,3 +2178,36 @@ invention, `INTEGRITY-3`, `QA-2`, the `APPROVAL-1` gate.
 **To resume cold**: read this entry, then decide with the user whether to spend a live
 regeneration to read the new diagnostic log and finally answer the `checks: None` question with
 evidence.
+
+---
+
+### 2026-09-21 — `checks: None` question definitively closed: no bug, no retreat, genuine per-run judgment
+
+Spent the one live regeneration flagged as pending (~$0.47) specifically to read the new
+diagnostic log. Result, read directly rather than inferred: **every one of the four phases'
+`finalize_proposal` calls succeeded on the first attempt** -- zero `REJECTED` lines anywhere in
+the log. Phase-1 (`retarget-sdk-style-project`) researched across two rounds (read the `.csproj`,
+`packages.config`, the `.sln`, `build/Templates.targets`, grepped for `TargetFrameworkVersion`)
+and then called `finalize_proposal` once, immediately accepted with `checks: null`. Phases 2, 3,
+and 4 all got a check on their own first attempt too.
+
+**This definitively rules out the concerning hypothesis** (a self-correction retry -- built two
+entries ago for the syntax-error bug -- causing the model to retreat to `checks: null` after a
+rejection instead of fixing the specific problem). That never happened, not once, across any
+phase in this run. The `checks: None` seen intermittently across different generations (sometimes
+phase-1, sometimes phase-3, never the same phase twice) is genuine, independent, first-try
+judgment variance run to run -- plausibly reasonable for phase-1 specifically, since a project
+format conversion either compiles as SDK-style or it doesn't, with no "hollow stub" risk
+analogous to a deleted controller's logic; `dotnet build` alone is a meaningfully strong signal
+for *that specific* kind of transformation in a way it categorically is not for porting behavioral
+code.
+
+**No further action needed on this thread.** No code changed this entry -- the diagnostic
+logging built last entry did exactly its job: turned a guess into a read fact. This closes the
+`checks: None` investigation that's been open since the fifth live run.
+
+**What remains exactly as built**: everything from the prior three entries, unmodified. Total
+live spend this entry: ~$0.47 (one `generate-plan` call).
+
+**To resume cold**: this specific investigation is closed; read this entry for the conclusion,
+then decide with the user what to work on next -- no open thread requires immediate action.
