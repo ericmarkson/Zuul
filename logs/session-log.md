@@ -2051,3 +2051,85 @@ more honest contents), and `plangen.py`'s grouping logic.
 
 **To resume cold**: read this entry, then check with the user before spending real money on a
 live validation of the behavioral-check mechanism against the real repo.
+
+---
+
+### 2026-09-20 — Live-validated the behavioral-check schema, found it doesn't get used against this repo, and correctly stopped chasing it
+
+User approved the live run. Generated a plan (~$0.47) and found phase-3 — the exact phase this
+whole feature exists for — came back with `checks: None`, relying on the plan's default
+`dotnet build` alone. Regenerated once more (~$0.41) to rule out stochastic variance: same
+result, and no phase in either attempt chose a behavioral (`command`+`supporting_files`) check,
+only the same text-based inspection as before. Investigated why before spending a third time:
+the real `alloy-mvc-template` repo has **zero existing test infrastructure** (no test project, no
+xUnit/NUnit/MSTest reference anywhere) -- confirmed by direct search, not assumed. The model is
+declining to invent a whole test project from nothing, plausibly because getting an unfamiliar
+scaffold wrong (SDK targeting, framework reference, project reference all correct in one shot)
+means the check fails identically on every implementer attempt no matter what -- the same
+syntax-error trap already fixed once this session, just at the scale of an entire project instead
+of one script.
+
+**User pushed back hard, twice, in a row that reshaped this entire thread.** First: "we're not
+supposed to be doing things that are specific for this type of example. Super generic. Why are we
+assuming there is going to be test infra? Is this hardcoded?" Checked before answering (grepped
+`plangen_llm.py` for `dotnet`/`csproj` -- three hits, all prose examples, zero code-level special
+casing) and confirmed: no, not hardcoded, the mechanism is genuinely generic. But the *proposed
+fix* (strengthen the prompt to encourage inventing scaffolding) was heading toward becoming
+hardcoded -- either it's generic encouragement that doesn't change a genuine risk-aversion, or
+it's specific scaffolding guidance that teaches the model .NET/xUnit conventions, which is the
+exact hardcoding-in-disguise pattern from the analyzer and the templates, just relocated into
+`SYSTEM_PROMPT`. Recommended stopping rather than writing that fix.
+
+**Second, more fundamental**: "what are we trying to accomplish here with this? When did tests
+become a thing we're looking at for this? ... the audit is supposed to be our recipe and our
+harness is supposed to enforce it and enforce accuracy." Checked the actual audit evidence before
+answering (`analyzer.py`'s incompatible-api findings carry `{assemblies, usage_site_count}` --
+file-level scope only, feeding `affected_paths`/`declared_scope` correctly, but never
+symbol-level "what correct code looks like," because that's the remediation's job, not the
+audit's, and always was). Conclusion, owned directly rather than defended: "behavioral checks
+that execute code" was **the assistant's own escalation**, introduced a few turns earlier by
+reasoning "only execution can distinguish real from fake" -- without checking it against
+`FRD.md` §1's own explicit, already-written caveat: *"this governs process integrity, not code
+correctness ... human review of generated code remains load-bearing."* Catching the
+`RegisterController` hollow stub by reading the diff by hand was never a gap needing an automated
+fix -- it was the system working exactly as the FRD already said it would: automated checks catch
+process failures (wrong scope, false claimed success, non-deterministic verdicts); a human
+catches content-quality failures the process was never designed to fully automate away. Chasing
+full behavioral test generation was reaching past a line this project had already drawn for
+itself.
+
+**Resolved**: keep the generic `command`/`supporting_files` schema built in the previous entry --
+it is a strict superset of the old capability, costs nothing when unused, and is a real
+improvement for any future repo that already has test tooling to build on. **Stop** trying to make
+the model invent test scaffolding from nothing for a repo that has none; that ceiling is real,
+accepted, and not a bug. No code changes this entry -- the correction was entirely about which
+direction *not* to keep building in, decided before spending more on it.
+
+**A tangential, explicitly-not-acted-on idea, for the record**: user asked whether a
+"knowledge graph" collected as a side effect of runs might help -- e.g. later phases in the same
+plan-generation call reusing earlier phases' research findings instead of re-discovering them
+from scratch (a concrete, evidence-earned cost inefficiency: six `generate-plan` calls this
+session each re-researched all four phases independently). Distinguished this narrow, cheap,
+architecture-consistent version from a much bigger persistent cross-run/cross-repo knowledge base,
+which would overlap heavily with the already-deferred `KNOWLEDGE-1` MCP promotion and
+`TELEMETRY-*` v2 disposition and isn't evidence-earned yet. **User: "Dont change it, it was just
+a question."** Recorded here so a future session doesn't have to re-derive this distinction if
+the idea comes up again, but nothing was built.
+
+**What remains exactly as built, unaffected by this entry**: the generic check schema, `INTEGRITY-3`,
+`QA-2`, the `APPROVAL-1` gate, `gate.py`'s fixed transparency bug -- all from the previous entry,
+none of it undone. Total live spend this entry: ~$0.88 (two `generate-plan` calls). Two plan
+artifacts (`alloy-mvc-template-run6-plan.json`, `-run6b-plan.json`) exist in `.scratch/plans/`
+(gitignored) as the evidence trail; not yet executed.
+
+**Still open, separate from the resolved question above**: phase-3 getting `checks: None` in
+*both* attempts, relying solely on `dotnet build`, arguably still under-serves the
+`SYSTEM_PROMPT`'s own existing rule ("For a TRANSFORM phase, you MUST include at least one check
+that positively confirms real content survived") -- independent of the behavioral-vs-text
+question just resolved. Not investigated further this entry; noted for whoever picks this up
+next.
+
+**To resume cold**: read this entry in full before touching `plangen_llm.py` again. Decide with
+the user whether to execute one of the two already-generated plans as-is (to see how the current
+check quality holds up in real execution) or investigate the still-open `checks: None` observation
+first.
