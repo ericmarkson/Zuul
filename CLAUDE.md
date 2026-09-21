@@ -191,19 +191,26 @@ template to it.
     spike, implementer-only sandboxing) and B2 (private package feeds). Independent of the whole
     pivot above; the only remaining open item from the *original* phase sequence (A–F all built
     and run at least once; the pivot was extra work the first live run's evidence demanded).
-12. ~~`KNOWLEDGE-1`'s v2 promotion...~~ **done, hermetic-only, 2026-09-21.** The researcher can
-    now consult an operator/pack-declared remote MCP server (e.g. Microsoft Learn's public docs
-    server) before `PLAN-5` freezes scope/checks — `model_provider.py`'s new `complete_with_mcp`
-    (Responses API), `plangen_llm.py`'s new `_propose_phase_with_mcp` loop, `cli.py`'s
-    `--mcp-server-url` and friends. **Live-validated, 2026-09-21** (~$1.35 across three attempts,
-    two real bugs found and fixed along the way — the Responses API's `reasoning` param shape,
-    and a real MCP-call-visibility gap in the diagnostic log): all 4 phases genuinely consulted
-    Microsoft Learn's real docs before finalizing, and the grounding visibly changed the output
-    (a specific `net472` target instead of a vaguer guess; more specific preserved-behavior
-    descriptions). 171/171 hermetic tests pass. **Next, if picked up, gated on a budget check-in
-    first**: an execution run against an MCP-grounded plan, to see if the grounding translates
-    into a better real migration outcome, not just a better-looking plan. See the "FIRST LIVE MCP
-    VALIDATION" decision-log entry above.
+12. ~~`KNOWLEDGE-1`'s v2 promotion...~~ **done and executed end-to-end, 2026-09-21.** The
+    researcher can consult an operator/pack-declared remote MCP server before `PLAN-5` freezes
+    scope/checks (`model_provider.py`'s `complete_with_mcp`, `plangen_llm.py`'s
+    `_propose_phase_with_mcp`, `cli.py`'s `--mcp-server-url`). Live-validated generation (~$1.35,
+    two real bugs found and fixed): all 4 phases genuinely consulted Microsoft Learn's real docs,
+    visibly changing the output. **Then executed the grounded plan for real (~$0.54)**: phase 3
+    — the phase every prior run struggled with — succeeded on the first attempt for the first
+    time ever, because the grounded researcher authored a real xUnit integration test
+    (`WebApplicationFactory`, asserting on real HTTP responses from the actually-migrated app)
+    that genuinely passed against real code, not a stub. Phase 4 hit a real, correct
+    `INTEGRITY-3` scope-conflict — the implementer tried to build a well-formed Options class the
+    researcher's own fetched guidance recommended, but that file was never added to
+    `additional_scope`. Not fixed — recorded as a real, subtler gap (grounding can make a
+    description promise more than its scope prediction delivers). 171/171 hermetic tests pass.
+    Real repo confirmed untouched both times. This item is closed; see the two "MCP" decision-log
+    entries above for full detail. Two small, non-urgent threads remain open if anyone wants
+    them: (a) whether `additional_scope` prediction should be made to cross-check itself against
+    its own description before finalizing; (b) confirming on a future run that the behavioral-test
+    ceiling from the earlier "stop chasing this" decision is genuinely resolved by MCP grounding,
+    not a one-off.
 13. **Tracked idea, explicitly not to be built without being asked again**: reusing a
     generation run's own research findings across phases (so phase 4 doesn't re-discover what
     phase 3 already found) — user asked about this as a "knowledge graph" question, was told the
