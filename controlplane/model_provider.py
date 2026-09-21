@@ -42,6 +42,13 @@ class ModelResponse:
     # by this project's own code; passing this id back on the next call is what lets the model
     # keep that context without us having to re-transmit or even see the MCP call's contents.
     response_id: str | None = None
+    # Purely observational (populated only by complete_with_mcp): every actual remote MCP tool
+    # invocation OpenAI's infrastructure made this round, if any. This project never dispatches
+    # or acts on these -- they're already resolved server-side by the time this response comes
+    # back -- but without surfacing them, there is no way to tell "the researcher chose not to
+    # consult external docs this round" from "it did, silently, and we never noticed," which is
+    # exactly the kind of gap DIAG-1 exists to close.
+    mcp_calls_made: tuple[dict, ...] = ()
 
 
 class ModelProvider(Protocol):
@@ -233,10 +240,13 @@ class OpenAIProvider:
             input=input_items,
             previous_response_id=previous_response_id,
             max_output_tokens=max_output_tokens,
-            # Mirrors complete_with_tools' finding: function tools plus a non-"none"
-            # reasoning_effort were rejected on the chat-completions endpoint for this model;
-            # applied here defensively pending live confirmation against the Responses API.
-            reasoning_effort="none",
+            # Mirrors complete_with_tools' finding (function tools rejected any non-"none"
+            # reasoning_effort on the chat-completions endpoint) -- found live, 2026-09-21, that
+            # the Responses API takes the same setting shaped differently: a nested `reasoning`
+            # object with an `effort` key, not a flat `reasoning_effort` string (that raised
+            # TypeError: Responses.create() got an unexpected keyword argument 'reasoning_effort'
+            # the first time this path was actually called).
+            reasoning={"effort": "none"},
             tools=[*self._to_responses_api_tool_shape(tools), *mcp_servers],
             tool_choice="auto",
         )
@@ -254,6 +264,14 @@ class OpenAIProvider:
             for part in item.content
             if part.type == "output_text"
         )
+        mcp_calls_made = tuple(
+            {
+                "server_label": item.server_label, "name": item.name,
+                "arguments": item.arguments, "output": item.output, "error": item.error,
+            }
+            for item in response.output
+            if item.type == "mcp_call"
+        )
         usage = response.usage
         return ModelResponse(
             content=content,
@@ -262,6 +280,7 @@ class OpenAIProvider:
             latency_seconds=latency,
             tool_calls=tool_calls,
             response_id=response.id,
+            mcp_calls_made=mcp_calls_made,
         )
 
 

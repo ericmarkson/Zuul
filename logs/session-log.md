@@ -2310,3 +2310,61 @@ validation (a real `generate-plan` call with `--mcp-server-url https://learn.mic
 against the real repo) -- budget heads-up required first, per the user's standing instruction
 from earlier this session. Watch specifically for whether the `reasoning_effort="none"`
 assumption holds on the Responses API, since that has not been verified.
+
+---
+
+### 2026-09-21 — First live MCP validation: two real bugs found and fixed, then genuine, confirmed grounding
+
+User said "run it." First attempt crashed immediately: `TypeError: Responses.create() got an
+unexpected keyword argument 'reasoning_effort'` -- confirming exactly the flagged, unverified
+assumption from the previous entry was wrong, the moment it was actually tested. Inspected the
+installed SDK's real signature rather than guess again: the Responses API takes a nested
+`reasoning={"effort": "none"}` object, not a flat `reasoning_effort` string. Cross-checked every
+other field this module's parsing code relies on (`ResponseUsage.input_tokens`/`output_tokens`,
+`ResponseFunctionToolCall.call_id`/`name`/`arguments`, `ResponseOutputText.text`) directly
+against the SDK's own type definitions before retrying, rather than fix one field and hope the
+rest were also right.
+
+**Second attempt succeeded** (~$0.63) -- but produced zero visible evidence either way about
+whether MCP was actually used, because the diagnostic logging only ever captured *local*
+`function_call` tool calls; a real remote MCP invocation is a different output-item type
+(`mcp_call`) that the parsing code was silently dropping. Found this by trying to read the log
+for confirmation and finding nothing conclusive, not by inspecting code in the abstract --
+exactly the same shape of gap `DIAG-1`'s original build closed for the `checks: None` question,
+recurring one layer deeper. **Fixed, hermetic-only**: `ModelResponse` gained `mcp_calls_made`,
+populated by `OpenAIProvider.complete_with_mcp` from any `mcp_call`-type output items
+(`server_label`/`name`/`arguments`/`output`/`error`), and `_propose_phase_with_mcp` now logs
+either the specifics of every real MCP call made that round or an explicit "no MCP calls made
+this round" line -- so a future read of the log can never again come back inconclusive. Two new
+tests lock this down: a scripted `mcp_calls_made` entry produces a specific, greppable log line,
+and a response with none logs that fact explicitly rather than staying silent. 171/171 hermetic
+tests pass.
+
+**Third live attempt (~$0.72) gave the actual answer, and it's a clean success.** Every one of
+the four phases genuinely called `microsoft_docs_search` then `microsoft_docs_fetch` against the
+real Microsoft Learn server before finalizing -- confirmed directly in the log, not inferred:
+phase-1 fetched the real .NET Framework-to-.NET porting guide's SDK-style-project section;
+phase-2 fetched the real NuGet "migrate packages.config to PackageReference" guide; phase-3
+fetched the real "Upgrade from ASP.NET MVC and Web API to ASP.NET Core MVC" guide; phase-4
+fetched the real "Migrate configuration to ASP.NET Core" guide. **The grounding visibly changed
+the output, not just the mechanism**: phase-1 now targets a specific `net472` framework moniker
+(rather than a vaguer "cross-platform" target earlier ungrounded runs guessed at inconsistently),
+and every phase's description reads measurably more specific about exactly what behavior must
+survive (phase-3's, for instance, now explicitly enumerates controllers, Razor views, routing,
+rendering, search, registration, display-channel, DI, filtering, error-handling, and static-asset
+behavior as things the transformation must preserve, not a generic "port this API" statement).
+
+**What remains exactly as built, untouched by this entry**: the whole MCP mechanism from the
+previous entry, the local research loop, the implementer, `INTEGRITY-3`, `QA-2`, the `APPROVAL-1`
+gate -- only the two bugs above were fixed, and one new observability field was added. Total live
+spend this entry: ~$1.35 across two successful `generate-plan` calls (the first attempt cost
+nothing; the SDK rejected the bad kwarg client-side before any request went out).
+
+**Not yet done**: an actual execution run using an MCP-grounded plan, to see whether the visibly
+better-grounded scope/descriptions/checks translate into a better real migration outcome when the
+implementer runs against them -- that's the next real-money decision point, not taken yet.
+
+**To resume cold**: read this entry, then decide with the user whether to spend an execution run
+against one of the MCP-grounded plans (`alloy-mvc-template-mcp2-plan.json`) to see if the
+grounding improves real migration outcomes, same as every other feature this session has been
+validated end-to-end eventually.

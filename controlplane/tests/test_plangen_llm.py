@@ -485,6 +485,36 @@ class McpResearchLoopTests(unittest.TestCase):
         self.assertIn("starting MCP-enabled research loop", log)
         self.assertIn("servers=['docs']", log)
 
+    def test_an_actual_mcp_call_is_logged_by_name_and_server(self):
+        """Without this, there is no way to tell "the researcher chose not to consult external
+        docs" from "it did, silently, and nothing noticed" -- found live, 2026-09-21, the first
+        time this path actually ran: mcp_call output items were being parsed by the provider but
+        never surfaced anywhere, so a real generation run gave zero evidence either way."""
+        from controlplane.eventlog import DiagnosticLog
+        log_path = Path(self._tmp.name) / "diag.log"
+        diag_log = DiagnosticLog(log_path)
+        response = ModelResponse(
+            content="", input_tokens=10, output_tokens=10, latency_seconds=0.01,
+            tool_calls=(ToolCall(id="c1", name="finalize_proposal", arguments={
+                "side_effect_class": "file-only", "description": "d", "additional_scope": [], "checks": None,
+            }),),
+            response_id="resp-1",
+            mcp_calls_made=({"server_label": "docs", "name": "microsoft_docs_search", "arguments": '{"query": "ASP.NET Core migration"}', "output": "some results", "error": None},),
+        )
+        provider = MockModelProvider(responses=[response])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS, diag_log=diag_log)
+        log = log_path.read_text(encoding="utf-8")
+        self.assertIn("MCP CALL server=docs tool=microsoft_docs_search", log)
+        self.assertIn("ASP.NET Core migration", log)
+
+    def test_no_mcp_call_this_round_is_logged_explicitly_not_silently(self):
+        from controlplane.eventlog import DiagnosticLog
+        log_path = Path(self._tmp.name) / "diag.log"
+        diag_log = DiagnosticLog(log_path)
+        provider = MockModelProvider(responses=[_mcp_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS, diag_log=diag_log)
+        self.assertIn("no MCP calls made this round", log_path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

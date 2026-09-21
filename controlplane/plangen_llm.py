@@ -490,6 +490,11 @@ def _propose_phase_with_mcp(
         previous_response_id = response.response_id
         call_names = [tc.name for tc in response.tool_calls]
         log(f"round={round_num} response_id={previous_response_id} tool_calls={call_names}")
+        if response.mcp_calls_made:
+            for mcp_call in response.mcp_calls_made:
+                log(f"round={round_num} MCP CALL server={mcp_call['server_label']} tool={mcp_call['name']} args={mcp_call['arguments']} error={mcp_call['error']} output={(mcp_call['output'] or '')[:500]!r}")
+        else:
+            log(f"round={round_num} no MCP calls made this round")
 
         if not response.tool_calls:
             log(f"round={round_num} FAILED: no local tool call, content={response.content!r}")
