@@ -213,6 +213,29 @@ generated plan's `_generated_from.dropped_informational_findings` field.
   the model spend rounds investigating). Not yet done: an actual execution run of this new plan,
   to confirm phase-3 now completes without escalating — a real-money checkpoint held pending a
   check-in with the user, per this project's own practice.
+- **Re-run a fourth and fifth time, 2026-09-20, after execution.** Two phases (SDK retarget,
+  packages.config→PackageReference) genuinely succeeded end-to-end for the first time on the
+  fourth run. Phase 4 also genuinely fixed Phase F's original gap 2. But phase-3's "success" on
+  that run was hand-found to be a real content-quality failure the pipeline missed: the model
+  deleted every controller/business-logic class instead of porting them, and both `dotnet build`
+  and its own generated check passed anyway, since that check only proved a forbidden pattern's
+  *absence*. Fixed with a REMOVAL-vs-TRANSFORM distinction in `SYSTEM_PROMPT` requiring a
+  positive-survival check for transform phases (no hardcoded domain vocabulary, no new tools —
+  purely a prompt change to the existing check-authoring mechanism). The fifth run then found
+  this narrowed but didn't close the gap: the "positive survival" check the model wrote was still
+  text-based (a regex for a class name), and the implementer satisfied it with a hollow stub —
+  `public class RegisterController { public const string ErrorKey = "CreateError"; }` — that
+  matched the regex while containing zero real logic. **Generalized further, same day**: a
+  check's `command` is now a fully generic subprocess argv (not hardcoded to Python) plus optional
+  `supporting_files` (e.g. a real test source file) that get materialized and committed by the
+  runner *before* the phase's own attempt loop begins, deliberately excluded from
+  `declared_scope` in code so `INTEGRITY-3`'s unmodified scope diff protects them from
+  tampering with zero new enforcement. A model researching a repo with real test tooling can now
+  author a check that *compiles and runs* the migrated code instead of reading it as text — which
+  a hollow stub cannot satisfy the way a regex can. 146/146 hermetic tests pass (26 new across
+  both fixes); this generalization itself was built hermetic-only, per the user's explicit
+  instruction to confirm budget before any further live run. Full detail in
+  `logs/session-log.md`'s "Fifth live run" and "Behavioral checks" entries.
 
 ## Phase E — Agentic implementer — *was Phase 4* — **done, then extended into a tool-calling agent, 2026-09-20**
 

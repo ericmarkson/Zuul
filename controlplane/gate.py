@@ -62,9 +62,12 @@ def present_gate(plan: Plan, baseline_sha: str, baseline_results: list[CheckResu
     print(f"\n{plan.plan_description}\n")
     print(f"Phases ({len(plan.phases)}):")
     for phase in plan.phases:
+        effective_checks = phase.checks if phase.checks is not None else plan.check_set
         print(f"  - {phase.id} [{phase.side_effect_class}]")
         print(f"      scope: {', '.join(phase.declared_scope)}")
-        print(f"      checks: {', '.join(c.id for c in plan.check_set)}")
+        print(f"      checks: {', '.join(c.id for c in effective_checks)}")
+        if phase.check_fixtures:
+            print(f"      check fixtures (created before this phase runs, outside its scope): {', '.join(f.path for f in phase.check_fixtures)}")
         print(f"      {phase.description}")
     print("\nBaseline check results (QA-5 — later phases are evaluated as deltas against this):")
     for result in baseline_results:

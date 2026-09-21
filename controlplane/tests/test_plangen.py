@@ -167,7 +167,7 @@ class ModelAuthoredChecksTests(unittest.TestCase):
             {"id": "FIND-001", "category": "project-format", "affected_paths": ["src/A/A.csproj"], "description": "d1", "remediation_tag": "modernize"},
         ])
         provider = MockModelProvider(responses=[_proposal_response(
-            "file-only", checks=[{"id": "modernize-produced-output", "python_script": script}],
+            "file-only", checks=[{"id": "modernize-produced-output", "command": ["{python}", "-c", script], "supporting_files": []}],
         )])
         phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
         checks = phases[0]["checks"]
@@ -183,7 +183,7 @@ class ModelAuthoredChecksTests(unittest.TestCase):
             {"id": "FIND-001", "category": "config-format", "affected_paths": ["Web.config"], "description": "d1", "remediation_tag": "modernize"},
         ])
         provider = MockModelProvider(responses=[_proposal_response(
-            "file-only", checks=[{"id": "modernize-produced-output", "python_script": script}],
+            "file-only", checks=[{"id": "modernize-produced-output", "command": ["{python}", "-c", script], "supporting_files": []}],
         )])
         phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
         check = next(c for c in phases[0]["checks"] if c["id"] == "modernize-produced-output")
@@ -200,7 +200,7 @@ class ModelAuthoredChecksTests(unittest.TestCase):
             {"id": "FIND-001", "category": "config-format", "affected_paths": ["Web.config"], "description": "d1", "remediation_tag": "modernize"},
         ])
         provider = MockModelProvider(responses=[_proposal_response(
-            "file-only", checks=[{"id": "modernize-produced-output", "python_script": script}],
+            "file-only", checks=[{"id": "modernize-produced-output", "command": ["{python}", "-c", script], "supporting_files": []}],
         )])
         phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
         check = next(c for c in phases[0]["checks"] if c["id"] == "modernize-produced-output")
@@ -227,6 +227,78 @@ class ModelAuthoredChecksTests(unittest.TestCase):
         provider = MockModelProvider(responses=[_proposal_response("file-only", checks=None)])
         phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
         self.assertIsNone(phases[0]["checks"])
+
+
+class BehavioralCheckFixtureTests(unittest.TestCase):
+    """A check's supporting_files (e.g. a real test source file backing a behavioral check --
+    the 2026-09-20 fix for a check that could be satisfied by a hollow stub) end up as the
+    phase's own frozen check_fixtures, and are never allowed into declared_scope even if the
+    model's own additional_scope names the same path -- INTEGRITY-3 must have something to
+    protect them from the implementer, which only works if they are never in scope to begin with."""
+
+    def test_supporting_files_become_the_phase_check_fixtures(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "incompatible-api", "affected_paths": ["src/A/Foo.cs"], "description": "d1", "remediation_tag": "port"},
+        ])
+        provider = MockModelProvider(responses=[_proposal_response(
+            "file-only",
+            checks=[{
+                "id": "behavioral-check",
+                "command": ["dotnet", "test", "tests/Foo.Tests/Foo.Tests.csproj"],
+                "supporting_files": [{"path": "tests/Foo.Tests/FooTests.cs", "content": "// real test"}],
+            }],
+        )])
+        phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
+        self.assertEqual(phases[0]["check_fixtures"], [{"path": "tests/Foo.Tests/FooTests.cs", "content": "// real test"}])
+
+    def test_fixture_paths_are_excluded_from_declared_scope_even_if_additional_scope_names_them(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "incompatible-api", "affected_paths": ["src/A/Foo.cs"], "description": "d1", "remediation_tag": "port"},
+        ])
+        provider = MockModelProvider(responses=[_proposal_response(
+            "file-only",
+            additional_scope=["tests/Foo.Tests/FooTests.cs"],  # deliberately conflicting with the fixture below
+            checks=[{
+                "id": "behavioral-check",
+                "command": ["dotnet", "test", "tests/Foo.Tests/Foo.Tests.csproj"],
+                "supporting_files": [{"path": "tests/Foo.Tests/FooTests.cs", "content": "// real test"}],
+            }],
+        )])
+        phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
+        self.assertNotIn("tests/Foo.Tests/FooTests.cs", phases[0]["declared_scope"])
+
+    def test_a_phase_with_no_supporting_files_gets_an_empty_check_fixtures_list(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "project-format", "affected_paths": ["src/A/A.csproj"], "description": "d1", "remediation_tag": "fix-a"},
+        ])
+        provider = MockModelProvider(responses=[_proposal_response("file-only")])
+        phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
+        self.assertEqual(phases[0]["check_fixtures"], [])
+
+    def test_generated_plan_with_check_fixtures_loads_through_the_real_plan_loader(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "incompatible-api", "affected_paths": ["src/A/Foo.cs"], "description": "d1", "remediation_tag": "port"},
+        ])
+        provider = MockModelProvider(responses=[_proposal_response(
+            "file-only",
+            checks=[{
+                "id": "behavioral-check",
+                "command": ["dotnet", "test", "tests/Foo.Tests/Foo.Tests.csproj"],
+                "supporting_files": [{"path": "tests/Foo.Tests/FooTests.cs", "content": "// real test"}],
+            }],
+        )])
+        with tempfile.TemporaryDirectory() as tmp:
+            findings_path = Path(tmp) / "findings.json"
+            findings_path.write_text(json.dumps(doc), encoding="utf-8")
+            plan_dict = plangen.generate_plan(findings_path=findings_path, model_provider=provider, check_set=SAMPLE_CHECK_SET, run_id_prefix="test-gen")
+            plan_path = Path(tmp) / "plan.json"
+            plangen.write_plan_file(plan_path, plan_dict)
+
+            from controlplane.plan import load_plan
+            loaded = load_plan(plan_path)
+            self.assertEqual(len(loaded.phases[0].check_fixtures), 1)
+            self.assertEqual(loaded.phases[0].check_fixtures[0].path, "tests/Foo.Tests/FooTests.cs")
+            self.assertEqual(loaded.phases[0].check_fixtures[0].content, "// real test")
 
 
 if __name__ == "__main__":

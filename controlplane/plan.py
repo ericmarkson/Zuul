@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -24,6 +24,16 @@ class EditSpec:
 
 
 @dataclass(frozen=True)
+class CheckFixture:
+    """A file a phase's own check needs to exist to run (most commonly a test source file) --
+    written and committed by the runner *before* the phase's attempt loop begins, and
+    deliberately never part of `declared_scope`, so INTEGRITY-3's unmodified scope diff protects
+    it from the implementer the same way it protects everything else outside scope."""
+    path: str
+    content: str
+
+
+@dataclass(frozen=True)
 class PhaseSpec:
     id: str
     description: str
@@ -35,6 +45,7 @@ class PhaseSpec:
     # whose node template knows what success looks like (e.g. "this file should now exist")
     # can add its own on top, per plangen.py.
     checks: list[CheckSpec] | None = None
+    check_fixtures: list[CheckFixture] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,7 @@ def load_plan(path: Path) -> Plan:
                 [CheckSpec(id=c["id"], command=c["command"], result_artifact=c["result_artifact"], result_format=c["result_format"]) for c in p["checks"]]
                 if p.get("checks") is not None else None
             ),
+            check_fixtures=[CheckFixture(path=f["path"], content=f["content"]) for f in p.get("check_fixtures", [])],
         )
         for p in data["phases"]
     ]

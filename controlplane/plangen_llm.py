@@ -20,15 +20,31 @@ that let the model independently search the actual target repo (`grep_repo`, `li
 `read_file`, shared via `repo_tools.py`) before committing to a proposal -- generalized to any
 file type or remediation category the model decides to check, not enumerated in advance.
 
-FRD QA-2 stays non-negotiable throughout: the model authors a check's content (a Python script)
-at generation time, but the check is still executed as a subprocess and still verified by exit
-code alone, at execution time, by the same unmodified `checks.py` every other check goes through.
-The model never gets to declare its own verdict -- only what command to run, and only what scope
-to declare. Nothing here pre-filters `side_effect_class` or `additional_scope` against the
-findings' own paths, mirroring `llm_implementer.py`'s "detection, not prevention" stance --
-INTEGRITY-3's post-commit scope diff is what actually enforces a phase's declared scope at
-execution time; this module is not that enforcement, just an input to it, reviewed by the
-operator at the gate before anything executes."""
+FRD QA-2 stays non-negotiable throughout: the model authors a check's command (and, since the
+same day's later extension, any supporting files that command needs to exist) at generation
+time, but the check is still executed as a subprocess and still verified by exit code alone, at
+execution time, by the same unmodified `checks.py` every other check goes through. The model
+never gets to declare its own verdict -- only what command to run, and only what scope to
+declare. Nothing here pre-filters `side_effect_class` or `additional_scope` against the findings'
+own paths, mirroring `llm_implementer.py`'s "detection, not prevention" stance -- INTEGRITY-3's
+post-commit scope diff is what actually enforces a phase's declared scope at execution time; this
+module is not that enforcement, just an input to it, reviewed by the operator at the gate before
+anything executes.
+
+A check's `command` is a fully generic subprocess argv -- not hardcoded to Python. A model-
+authored check was originally always wrapped as `python -c <script>`, which quietly assumed
+every check was expressible as a self-contained Python one-liner; that assumption breaks for a
+check that needs to actually compile and run the migrated code (e.g. `dotnet test`), which is
+exactly what closes the gap a text-only check cannot: a check that greps final source for a
+class name is satisfied equally by a real port and by a hollow stub with the right name and no
+real logic (found live, 2026-09-20, phase-3's `RegisterController` reduced to an empty shell that
+still matched its own survival check). A behavioral check that compiles and runs the code cannot
+be satisfied by a stub. `command` can be anything; a check that needs a supporting test file to
+exist declares it via `supporting_files`, materialized by the runner *before* the phase's own
+attempt loop begins and deliberately kept outside `declared_scope` -- so it is present when the
+implementer starts (visible to it like any other file, via `read_file`), but `INTEGRITY-3`
+automatically treats any attempt to modify it as a scope violation, the same unmodified mechanism
+that already protects everything else, with no new enforcement code required."""
 
 from __future__ import annotations
 
@@ -69,27 +85,41 @@ finalize_proposal's fields:
 - description: a clear, specific description of what this phase should accomplish.
 - additional_scope: repo-relative paths beyond the findings' own affected_paths that the \
 remediation will plausibly need to create or modify -- including anything your own research \
-turned up that the findings missed. Empty list if none.
-- checks: a list of {"id": "...", "python_script": "..."} -- a self-contained Python 3 script per \
-check, run via `python -c <script>` with the verifier's checked-out repo as the working \
-directory, that exits 0 if and only if this specific remediation actually happened -- or null if \
-the plan's default build/test check set is already sufficient, with nothing phase-specific worth \
-checking.
+turned up that the findings missed. Empty list if none. Never include a path you also list in a \
+check's own supporting_files (see below) -- those are frozen and must not be in scope.
+- checks: a list of {"id": "...", "command": [...], "supporting_files": [...]} -- or null if the \
+plan's default build/test check set is already sufficient, with nothing phase-specific worth \
+checking. For each check:
+  - command: a subprocess argv (list of strings), run with the verifier's checked-out repo as \
+the working directory, that exits 0 if and only if this specific remediation actually happened. \
+Use whatever tool actually fits -- there is no required language. For a simple, self-contained \
+inline script, use the literal token "{python}" as the first element (it is substituted with the \
+right interpreter at run time), e.g. ["{python}", "-c", "<script>"]. For a real compiled/executed \
+check (e.g. `dotnet test some.Tests.csproj`), use that tool's own command directly.
+  - supporting_files: a list of {"path": "...", "content": "..."} for any file that command needs \
+to already exist to run (most commonly a test source file) -- empty list if the command is \
+self-contained. These are created before the implementer's phase even begins and are never part \
+of its declared scope; do not also list their paths in additional_scope.
 
 A check that only proves a forbidden pattern is GONE can be satisfied just as easily by deleting \
 the code that used it as by actually porting it -- deletion is often the cheaper path for an \
-implementer facing a hard rewrite, and a check that only looks for absence cannot tell the \
-difference. Before finalizing, decide honestly which kind of phase this is:
+implementer facing a hard rewrite, and a check built from reading text (even a check that greps \
+for a class name) cannot tell a real implementation from an empty shell with the right name and \
+no real logic. Before finalizing, decide honestly which kind of phase this is:
 - A REMOVAL phase, where a file or setting is meant to disappear with no successor (e.g. a \
 legacy file superseded by a replacement already covered by its own existence check) -- absence \
 is genuinely the correct, sufficient proof here.
 - A TRANSFORM phase, where existing behavior is meant to survive in a new form (e.g. rewriting \
 source files to a new API rather than deleting the functionality they implement) -- for these, \
-use read_file/grep_repo to note distinctive identifiers (type names, method names, or other \
-unique strings) that the current code actually defines, and include a check that greps the \
-final repository for those same identifiers (or ones your own description commits to renaming \
-them to) still being present somewhere -- not only that the old, forbidden pattern is gone. This \
-generalizes to any language or file type; it is not specific to any one framework's concepts.
+prefer a BEHAVIORAL check over a text-inspection one whenever the repository's own toolchain \
+makes it feasible: research (read_file/grep_repo) what the current code actually does, then \
+write a real test (via supporting_files) that exercises the migrated code's behavior and asserts \
+on it, run through the repository's actual test tooling (whatever you find it uses, or a minimal \
+ad hoc one if it uses none) -- not merely a script that checks a name or pattern is present or \
+absent. A check that compiles and runs the code cannot be satisfied by a hollow stub the way a \
+text-pattern check can. This generalizes to any language, file type, or test framework; it is \
+not specific to any one ecosystem's concepts, and the choice of tool is yours to make from what \
+you find in the repository.
 
 Rules:
 - Research is most valuable for findings whose category a narrow static scanner could plausibly \
@@ -99,7 +129,8 @@ well-defined project-format finding with no ambiguity about what needs to change
 - "checks" being null is a real, correct answer when the plan's default check set already proves \
 the remediation -- do not invent a check just to have one.
 - For a TRANSFORM phase, you MUST include at least one check that positively confirms real \
-content survived, not solely a check that the old pattern is gone.
+content survived, not solely a check that the old pattern is gone -- and prefer a behavioral \
+check (one that actually runs the migrated code) over a text-inspection one when feasible.
 - You must call finalize_proposal to complete this task. Do not describe a proposal in plain text \
 instead of calling it.
 """
@@ -161,9 +192,20 @@ TOOLS = [
                             "type": "object",
                             "properties": {
                                 "id": {"type": "string"},
-                                "python_script": {"type": "string"},
+                                "command": {"type": "array", "items": {"type": "string"}},
+                                "supporting_files": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {"type": "string"},
+                                            "content": {"type": "string"},
+                                        },
+                                        "required": ["path", "content"],
+                                    },
+                                },
                             },
-                            "required": ["id", "python_script"],
+                            "required": ["id", "command", "supporting_files"],
                         },
                     },
                 },
@@ -175,9 +217,16 @@ TOOLS = [
 
 
 @dataclass(frozen=True)
+class SupportingFile:
+    path: str
+    content: str
+
+
+@dataclass(frozen=True)
 class CheckProposal:
     id: str
-    python_script: str
+    command: list[str]
+    supporting_files: list[SupportingFile]
 
 
 @dataclass(frozen=True)
@@ -219,6 +268,24 @@ def _execute_tool(name: str, arguments: dict, target_repo: Path) -> str:
     return f"error: unknown tool {name!r}"
 
 
+def _validate_inline_python_syntax(check_id: str, command: list[str]) -> None:
+    """Best-effort syntax pre-check for the common "{python}" -c <script>" shape -- a real
+    failure mode found live, 2026-09-20: a check that doesn't even compile fails identically no
+    matter what the implementer produces, silently wasting the phase's entire retry budget on an
+    unwinnable check rather than a real content problem. Caught here, before the proposal is ever
+    frozen into a plan. Deliberately does not (and cannot generically) validate any other tool's
+    command -- a `dotnet test` invocation's C# correctness is discovered by its own exit code at
+    check time, exactly like any other check; that's QA-2 working as intended, not a gap."""
+    if command and command[0] == "{python}" and "-c" in command:
+        idx = command.index("-c")
+        if idx + 1 < len(command):
+            script = command[idx + 1]
+            try:
+                compile(script, f"<check:{check_id}>", "exec")
+            except SyntaxError as exc:
+                raise MalformedPlanProposal(f"check {check_id!r}'s inline Python script does not compile: {exc}") from exc
+
+
 def _validate_checks(raw_checks) -> list[CheckProposal] | None:
     if raw_checks is None:
         return None
@@ -226,9 +293,23 @@ def _validate_checks(raw_checks) -> list[CheckProposal] | None:
         raise MalformedPlanProposal(f"'checks' must be a list or null, got {raw_checks!r}")
     checks = []
     for i, item in enumerate(raw_checks):
-        if not isinstance(item, dict) or "id" not in item or "python_script" not in item:
-            raise MalformedPlanProposal(f"checks[{i}] missing 'id' or 'python_script': {item!r}")
-        checks.append(CheckProposal(id=item["id"], python_script=item["python_script"]))
+        if not isinstance(item, dict) or "id" not in item or "command" not in item:
+            raise MalformedPlanProposal(f"checks[{i}] missing 'id' or 'command': {item!r}")
+        command = item["command"]
+        if not isinstance(command, list) or not command or not all(isinstance(c, str) for c in command):
+            raise MalformedPlanProposal(f"checks[{i}] 'command' must be a non-empty list of strings, got {command!r}")
+        _validate_inline_python_syntax(item["id"], command)
+
+        raw_files = item.get("supporting_files", [])
+        if not isinstance(raw_files, list):
+            raise MalformedPlanProposal(f"checks[{i}] 'supporting_files' must be a list, got {raw_files!r}")
+        supporting_files = []
+        for j, f in enumerate(raw_files):
+            if not isinstance(f, dict) or "path" not in f or "content" not in f:
+                raise MalformedPlanProposal(f"checks[{i}].supporting_files[{j}] missing 'path' or 'content': {f!r}")
+            supporting_files.append(SupportingFile(path=f["path"], content=f["content"]))
+
+        checks.append(CheckProposal(id=item["id"], command=command, supporting_files=supporting_files))
     return checks or None
 
 
@@ -283,12 +364,34 @@ def propose_phase(
         })
 
         finalize_call = next((tc for tc in response.tool_calls if tc.name == "finalize_proposal"), None)
+        proposal: PhaseProposal | None = None
         if finalize_call is not None:
-            return _parse_proposal(finalize_call.arguments)
+            try:
+                proposal = _parse_proposal(finalize_call.arguments)
+            except MalformedPlanProposal as exc:
+                if round_num >= max_tool_rounds:
+                    raise
+                # Give the model a chance to self-correct within the same bounded loop, the same
+                # way EXEC-3's retry loop feeds implementer failures back -- a malformed proposal
+                # (including a check script that doesn't compile) is exactly the kind of mistake
+                # a model can fix immediately once told what's wrong, cheaper than failing the
+                # whole generation and starting over.
+                messages.append({
+                    "role": "tool", "tool_call_id": finalize_call.id,
+                    "content": f"error: your proposal was invalid: {exc}. Call finalize_proposal again with a corrected proposal.",
+                })
 
+        # Every other tool call in this batch still needs a response before the next request,
+        # regardless of whether finalize_proposal (if also called this round) succeeded, failed,
+        # or wasn't called at all -- the API requires one tool-role message per tool call.
         for tc in response.tool_calls:
+            if tc is finalize_call:
+                continue
             result = _execute_tool(tc.name, tc.arguments, target_repo)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+        if proposal is not None:
+            return proposal
 
     raise MalformedPlanProposal(f"plan generator did not call finalize_proposal within {max_tool_rounds} tool-call round(s)")
 
@@ -296,10 +399,27 @@ def propose_phase(
 def materialize_check(check: CheckProposal) -> dict:
     """A model-authored check becomes an ordinary CheckSpec-shaped dict: a subprocess command
     whose exit code governs (QA-2), exactly like every hand-authored or template-authored check
-    before it. Only *who wrote the script* is new."""
+    before it. Only *who wrote the command* is new. "{python}" is the one placeholder resolved
+    here rather than left for `runner.py`'s generic substitution, since it names a fact about
+    this machine (which interpreter this control plane is running under) rather than anything
+    about a specific run or phase."""
+    command = [sys.executable if part == "{python}" else part for part in check.command]
     return {
         "id": check.id,
-        "command": [sys.executable, "-c", check.python_script],
+        "command": command,
         "result_artifact": "{run_dir}/results/{phase_id}/" + check.id + "-unused.xml",
         "result_format": "junit",
     }
+
+
+def materialize_fixtures(checks: list[CheckProposal]) -> list[dict]:
+    """Collects every check's supporting_files into the flat {"path", "content"} list
+    `runner.py` writes and commits *before* a phase's own attempt loop begins -- so they exist
+    when the implementer starts (visible like any other file) but are never part of its
+    declared_scope, and INTEGRITY-3's unmodified post-commit scope diff automatically protects
+    them from being altered, without any new enforcement mechanism."""
+    fixtures: dict[str, str] = {}
+    for check in checks:
+        for f in check.supporting_files:
+            fixtures[f.path] = f.content
+    return [{"path": path, "content": content} for path, content in fixtures.items()]

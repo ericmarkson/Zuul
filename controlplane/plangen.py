@@ -88,7 +88,13 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
 
         affected_paths = sorted({p for f in group for p in f["affected_paths"]})
         finding_ids = sorted(f["id"] for f in group)
-        declared_scope = sorted(set(affected_paths) | set(proposal.additional_scope))
+
+        check_fixtures = plangen_llm.materialize_fixtures(proposal.checks) if proposal.checks else []
+        fixture_paths = {f["path"] for f in check_fixtures}
+        # A fixture path must never end up in declared_scope, no matter what the model's own
+        # additional_scope said -- it has to stay outside the implementer's writable scope for
+        # INTEGRITY-3 to protect it automatically. Enforced here in code, not left to the prompt.
+        declared_scope = sorted((set(affected_paths) | set(proposal.additional_scope)) - fixture_paths)
 
         checks = list(check_set) + [plangen_llm.materialize_check(c) for c in proposal.checks] if proposal.checks else None
 
@@ -99,6 +105,7 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
             "side_effect_class": proposal.side_effect_class,
             "edits": [],
             "checks": checks,
+            "check_fixtures": check_fixtures,
         })
 
     return phases, dropped

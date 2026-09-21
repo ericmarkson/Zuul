@@ -139,6 +139,20 @@ class Runner:
 
     # ---- phase execution -----------------------------------------------------
 
+    def _materialize_check_fixtures(self, phase) -> None:
+        """Writes a phase's check fixtures (e.g. a behavioral test file) and commits them
+        *before* `pre_sha` is captured for this phase's attempt loop -- so they are simply
+        "already there" as far as the retry-diff mechanism is concerned. They deliberately never
+        appear in `declared_scope` (`plangen.py` enforces this at generation time), so if an
+        implementer attempt modifies one anyway, `INTEGRITY-3`'s unmodified post-commit scope
+        diff catches it as an out-of-scope write like anything else -- no new enforcement code."""
+        for fixture in phase.check_fixtures:
+            dest = self.target_repo / fixture.path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(fixture.content, encoding="utf-8")
+        gitops.commit_all(self.target_repo, f"chore(installgraph): add check fixtures for phase '{phase.id}'")
+        self.diag_log.write(f"phase={phase.id} materialized check fixtures: {[f.path for f in phase.check_fixtures]}")
+
     def _apply_edits(self, phase) -> None:
         for edit in phase.edits:
             src = self.edits_dir / edit.content_file
@@ -216,6 +230,8 @@ class Runner:
         immediately, fail closed, exactly as in Phase A/D. Budget overruns are never retried
         either -- BUDGET-2 requires an immediate halt."""
         self.event_log.append(EventType.PHASE_STARTED, phase_id=phase.id)
+        if phase.check_fixtures:
+            self._materialize_check_fixtures(phase)
         pre_sha = gitops.head(self.target_repo)
         cumulative_input_tokens = 0
         cumulative_output_tokens = 0

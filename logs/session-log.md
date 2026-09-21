@@ -1953,3 +1953,101 @@ this entry: ~$1.3 (~$0.86 execution + ~$0.44 regeneration).
 `APPROVAL-1` gate, and the grouping logic in `plangen.py` -- this entry is the third time the
 pivot has touched *how a group's phase gets authored* (templates -> LLM proposal -> research
 loop -> stronger check-authoring guidance) without ever touching grouping or execution.
+
+---
+
+### 2026-09-20 — Behavioral checks: closing the hollow-stub gap generically, cost accounting, hermetic-only this pass
+
+Fifth live run's `RegisterController` hollow stub (previous entry) raised a real question: user
+asked whether this is "a missing agentic QA layer." Corrected the framing before building
+anything, since this is exactly the spot where a well-meaning idea slides into the thing `QA-2`
+exists to forbid: an agent whose *judgment* decides pass/fail, however dressed up with tools or
+context, is the self-report failure mode this project has spent multiple review cycles closing.
+What's actually missing is narrower: a stronger *kind* of check, authored by the same mechanism
+that already exists (`finalize_proposal`), still verified by the same deterministic path (a real
+subprocess exit code) -- a check that *compiles and runs* the migrated code instead of reading it
+as text, which cannot be satisfied by a hollow stub the way a regex can.
+
+**Separately, user asked for a cost accounting before authorizing more spend** ("we're almost at
+$4 total, caching is the most expensive part"). Reconstructed the actual total from every
+`model tokens: X in / Y out (~$Z)` line printed this session: **~$5.36** across six `generate-plan`
+calls (~$2.26) and six `run` executions (~$3.10) -- higher than the user's own estimate, and even
+that excludes two runs (`run3`, `run3c`) that crashed from bugs before the CLI reached its final
+print, whose partial spend is genuinely untracked anywhere. Explained the likely reconciliation:
+this project's own `estimate_cost_usd` doesn't know about OpenAI's prompt-caching discount --
+both tool-calling loops resend the entire growing conversation every round, so a large share of
+input tokens are an exact repeat of the prior round's prefix, exactly what automatic caching
+discounts; a real bill closer to $4 with a large "cached" line is consistent with the cache doing
+its job, not with caching being wasteful. Flagged a genuine, separate inefficiency for later: six
+`generate-plan` calls each regenerated all 4 phases from scratch even when only validating one
+phase's behavior. **User's response: proceed with the behavioral-checks build, but flag before
+any further live run so budget can be confirmed.** This entry is hermetic-only, per that
+instruction -- no live API calls were made building or testing this.
+
+**The generalization, and why it stays domain-agnostic.** The prior design (`materialize_check`
+wrapping every check as `[sys.executable, "-c", script]`) quietly assumed every check was a
+self-contained Python one-liner -- itself a genericity violation, the same shape as everything
+else this pivot has removed. Generalized `CheckProposal.python_script: str` into
+`CheckProposal.command: list[str]` (a fully generic subprocess argv -- `dotnet test`, `npm test`,
+anything) plus `CheckProposal.supporting_files: list[SupportingFile]` (files, most commonly a
+test source file, that command needs to already exist). The model chooses the tool and test
+shape from its own research into the actual repo (a `.csproj` present -> `dotnet test`; nothing
+testable -> the existing text-based check remains valid, especially for REMOVAL-type findings);
+nothing in the prompt hardcodes "always use dotnet." A literal `"{python}"` token in `command`'s
+first position is resolved to `sys.executable` at generation time (in `materialize_check`,
+before the plan is even written to disk) -- kept as the one placeholder specific to "the
+interpreter this control plane itself runs under," not a fact any check-author should have to
+guess at, while every other tool's command is passed through untouched.
+
+**Where the fixture files live, and why they're safe from tampering with zero new enforcement
+code.** A phase's `check_fixtures` (aggregated across all its checks' `supporting_files` by
+`plangen_llm.materialize_fixtures`) are written and committed by the runner *before* `pre_sha` is
+captured for that phase's attempt loop (`Runner._materialize_check_fixtures`, called at the top
+of `_execute_phase`) -- so they are simply "already there" by the time the retry-diff mechanism
+starts caring about what changed. `plangen.py`'s `generate_phases` explicitly subtracts every
+fixture path from `declared_scope` in code, regardless of what the model's own `additional_scope`
+said, so a fixture path can never accidentally end up writable. The consequence: if an implementer
+attempt modifies a fixture anyway, `INTEGRITY-3`'s completely unmodified post-commit scope diff
+flags it as an out-of-scope write and escalates fail-closed, exactly like anything else outside
+declared scope -- proven directly in `test_check_fixtures_runner.py` rather than asserted. The
+implementer doesn't need any new wiring to *see* a fixture either -- since it's a real file in the
+repo before the implementer's loop starts, its existing `read_file` tool already surfaces it "for
+free," the same way it already surfaces check commands in the phase prompt.
+
+**A second real, separate transparency bug found and fixed while touching this area**:
+`gate.py`'s `present_gate` -- what the human operator actually reads at the single `APPROVAL-1`
+gate -- always printed the *plan's* default check set, never a phase's own `PLAN-5` override. The
+exact same class of bug already fixed for the implementer's own prompt earlier today, except this
+one was hiding the real check from the *human*, not the model -- meaning an operator reviewing a
+phase with a behavioral check would have seen "checks: build" and never known the actual
+`dotnet test` invocation (or its fixture file) governing the real verdict. Fixed to resolve
+`phase.checks if phase.checks is not None else plan.check_set`, and added a `check fixtures:` line
+whenever a phase has any, so the operator can see exactly what will be created before approving.
+New `test_gate.py` (5 tests, no prior gate tests existed).
+
+**Test suite**: `test_plangen_llm.py` and `test_plangen.py` updated for the new schema (aliasing
+every `python_script` test to the `command`/`supporting_files` shape) plus new coverage for
+`supporting_files` validation, the non-Python-command syntax-check exemption (a `dotnet test`
+command's C# correctness is discovered by its own exit code, not statically pre-validated --
+`QA-2` working as intended, not a gap), `materialize_fixtures`'s aggregation, and the
+declared_scope-exclusion guarantee. New `test_check_fixtures_runner.py` (5 integration tests
+against a real `Runner`, `MockModelProvider` only) proving fixture visibility, invisibility to
+the scope diff when untouched, escalation when tampered with, and survival across an `INTEGRITY-8`
+reset between retry attempts. New `test_gate.py` (5 tests). **146/146 hermetic tests pass** (up
+from 136 before this entry's own additions, several of which were already added mid-conversation
+for the definition-of-done and syntax-validation fixes preceding this one).
+
+**Not yet done, deliberately, per the user's explicit instruction**: any live validation that a
+researcher, given a real repository, actually chooses to author a real `dotnet test` fixture
+instead of a text-based check for a TRANSFORM phase -- and whether that closes the `RegisterController`
+hollow-stub gap for real. That is real money and needs a heads-up first, not assumed as this
+session's automatic next step.
+
+**What remains exactly as built, untouched by this entry**: `INTEGRITY-3`'s scope enforcement
+(exercised, not modified, by the new fixture-protection tests), `QA-2`'s exit-code-only verdict
+derivation (a behavioral check is still just a subprocess with an exit code, nothing about how a
+verdict is derived changed), the single `APPROVAL-1` gate (still the only checkpoint, now with
+more honest contents), and `plangen.py`'s grouping logic.
+
+**To resume cold**: read this entry, then check with the user before spending real money on a
+live validation of the behavioral-check mechanism against the real repo.

@@ -59,10 +59,23 @@ class ProposePhaseTests(unittest.TestCase):
         self.assertIsNone(proposal.checks)
 
     def test_finalize_with_checks_parses_into_check_proposals(self):
-        provider = MockModelProvider(responses=[_finalize(checks=[{"id": "c1", "python_script": "import sys; sys.exit(0)"}])])
+        provider = MockModelProvider(responses=[_finalize(checks=[{"id": "c1", "command": ["{python}", "-c", "import sys; sys.exit(0)"], "supporting_files": []}])])
         proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
         self.assertEqual(len(proposal.checks), 1)
         self.assertEqual(proposal.checks[0].id, "c1")
+        self.assertEqual(proposal.checks[0].command, ["{python}", "-c", "import sys; sys.exit(0)"])
+
+    def test_finalize_with_supporting_files_parses(self):
+        provider = MockModelProvider(responses=[_finalize(checks=[{
+            "id": "behavioral-check",
+            "command": ["dotnet", "test", "tests/Foo.Tests/Foo.Tests.csproj"],
+            "supporting_files": [{"path": "tests/Foo.Tests/FooTests.cs", "content": "// test content"}],
+        }])])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+        self.assertEqual(proposal.checks[0].command, ["dotnet", "test", "tests/Foo.Tests/Foo.Tests.csproj"])
+        self.assertEqual(len(proposal.checks[0].supporting_files), 1)
+        self.assertEqual(proposal.checks[0].supporting_files[0].path, "tests/Foo.Tests/FooTests.cs")
+        self.assertEqual(proposal.checks[0].supporting_files[0].content, "// test content")
 
     def test_response_with_no_tool_call_raises(self):
         provider = MockModelProvider(responses=[_no_tool_call()])
@@ -72,7 +85,7 @@ class ProposePhaseTests(unittest.TestCase):
     def test_invalid_side_effect_class_raises(self):
         provider = MockModelProvider(responses=[_finalize(side_effect_class="made-up-class")])
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
-            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
 
     def test_missing_description_raises(self):
         response = ModelResponse(
@@ -81,22 +94,53 @@ class ProposePhaseTests(unittest.TestCase):
         )
         provider = MockModelProvider(responses=[response])
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
-            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
 
     def test_empty_description_raises(self):
         provider = MockModelProvider(responses=[_finalize(description="   ")])
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
-            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
 
     def test_non_list_additional_scope_raises(self):
         provider = MockModelProvider(responses=[_finalize(additional_scope="not-a-list")])
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
-            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
 
-    def test_check_missing_python_script_raises(self):
+    def test_check_missing_command_raises(self):
         provider = MockModelProvider(responses=[_finalize(checks=[{"id": "c1"}])])
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
-            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
+
+    def test_check_command_must_be_a_non_empty_list_of_strings(self):
+        provider = MockModelProvider(responses=[_finalize(checks=[{"id": "c1", "command": "not-a-list", "supporting_files": []}])])
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
+
+    def test_check_with_syntax_error_raises_malformed(self):
+        """Regression for a real bug found live, 2026-09-20: a check script the model wrote had
+        an invalid raw string literal (r'..\\..\\packages\\', which can't end in a backslash) --
+        it failed identically on every implementer attempt, wasting the whole retry budget on an
+        unwinnable check rather than a real content problem."""
+        provider = MockModelProvider(responses=[_finalize(checks=[{"id": "c1", "command": ["{python}", "-c", "def broken(:\n    pass"], "supporting_files": []}])])
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
+
+    def test_check_with_non_python_command_is_not_syntax_checked(self):
+        """A dotnet/npm/etc. command's own correctness is discovered by its real exit code at
+        check time -- this project can't and shouldn't try to statically validate arbitrary
+        tools' syntax, only the {python} -c <script> shape it can actually compile-check."""
+        provider = MockModelProvider(responses=[_finalize(checks=[{
+            "id": "behavioral-check", "command": ["dotnet", "test", "this is not valid C# but that's not this check's job"], "supporting_files": [],
+        }])])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
+        self.assertEqual(proposal.checks[0].command[0], "dotnet")
+
+    def test_supporting_file_missing_content_raises(self):
+        provider = MockModelProvider(responses=[_finalize(checks=[{
+            "id": "c1", "command": ["dotnet", "test"], "supporting_files": [{"path": "x.cs"}],
+        }])])
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=1)
 
     def test_prompt_includes_finding_details_and_remediation_tag(self):
         provider = MockModelProvider(responses=[_finalize()])
@@ -107,12 +151,36 @@ class ProposePhaseTests(unittest.TestCase):
         self.assertIn("FIND-001", user_prompt)
         self.assertIn("legacy config file", user_prompt)
 
-    def test_materialize_check_produces_a_qa2_compliant_command(self):
-        check = plangen_llm.CheckProposal(id="my-check", python_script="import sys; sys.exit(1)")
+    def test_materialize_check_resolves_the_python_placeholder(self):
+        check = plangen_llm.CheckProposal(id="my-check", command=["{python}", "-c", "import sys; sys.exit(1)"], supporting_files=[])
         materialized = plangen_llm.materialize_check(check)
         self.assertEqual(materialized["command"][0], sys.executable)
         self.assertEqual(materialized["result_format"], "junit")
         self.assertIn("my-check", materialized["result_artifact"])
+
+    def test_materialize_check_leaves_a_non_python_command_untouched(self):
+        check = plangen_llm.CheckProposal(id="my-check", command=["dotnet", "test", "Foo.Tests.csproj"], supporting_files=[])
+        materialized = plangen_llm.materialize_check(check)
+        self.assertEqual(materialized["command"], ["dotnet", "test", "Foo.Tests.csproj"])
+
+    def test_materialize_fixtures_flattens_supporting_files_across_checks(self):
+        checks = [
+            plangen_llm.CheckProposal(id="c1", command=["dotnet", "test"], supporting_files=[
+                plangen_llm.SupportingFile(path="tests/A.cs", content="a"),
+            ]),
+            plangen_llm.CheckProposal(id="c2", command=["dotnet", "test"], supporting_files=[
+                plangen_llm.SupportingFile(path="tests/B.cs", content="b"),
+            ]),
+        ]
+        fixtures = plangen_llm.materialize_fixtures(checks)
+        self.assertEqual(
+            sorted(fixtures, key=lambda f: f["path"]),
+            [{"path": "tests/A.cs", "content": "a"}, {"path": "tests/B.cs", "content": "b"}],
+        )
+
+    def test_materialize_fixtures_returns_empty_list_when_no_check_has_supporting_files(self):
+        checks = [plangen_llm.CheckProposal(id="c1", command=["dotnet", "build"], supporting_files=[])]
+        self.assertEqual(plangen_llm.materialize_fixtures(checks), [])
 
 
 class ResearchLoopTests(unittest.TestCase):
@@ -156,6 +224,53 @@ class ResearchLoopTests(unittest.TestCase):
         with self.assertRaises(plangen_llm.MalformedPlanProposal):
             plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=3)
         self.assertEqual(len(provider.tool_calls_log), 3)
+
+
+class SelfCorrectionTests(unittest.TestCase):
+    """A malformed finalize_proposal call (including a check script that doesn't compile) gets
+    fed back to the model within the same bounded loop, rather than failing the whole
+    generation outright -- the same self-correction shape EXEC-3's retry loop gives the
+    implementer, applied to plan generation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_invalid_side_effect_class_gets_a_second_chance_and_succeeds(self):
+        provider = MockModelProvider(responses=[
+            _finalize(side_effect_class="made-up-class"),
+            _finalize(side_effect_class="file-only"),
+        ])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=5)
+        self.assertEqual(proposal.side_effect_class, "file-only")
+        self.assertEqual(len(provider.tool_calls_log), 2)
+
+    def test_the_error_message_is_fed_back_to_the_model(self):
+        provider = MockModelProvider(responses=[
+            _finalize(side_effect_class="made-up-class"),
+            _finalize(),
+        ])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=5)
+        second_round_messages = provider.tool_calls_log[1]
+        tool_results = [m["content"] for m in second_round_messages if m.get("role") == "tool"]
+        self.assertTrue(any("invalid" in r for r in tool_results))
+
+    def test_check_syntax_error_gets_a_second_chance_and_succeeds(self):
+        provider = MockModelProvider(responses=[
+            _finalize(checks=[{"id": "c1", "command": ["{python}", "-c", "def broken(:\n    pass"], "supporting_files": []}]),
+            _finalize(checks=[{"id": "c1", "command": ["{python}", "-c", "import sys; sys.exit(0)"], "supporting_files": []}]),
+        ])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=5)
+        self.assertEqual(proposal.checks[0].command, ["{python}", "-c", "import sys; sys.exit(0)"])
+
+    def test_exhausting_rounds_on_repeated_malformed_finalize_still_raises(self):
+        provider = MockModelProvider(responses=[_finalize(side_effect_class="made-up-class")] * 2)
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=2)
+        self.assertEqual(len(provider.tool_calls_log), 2)
 
 
 class DefinitionOfDoneGuidanceTests(unittest.TestCase):
