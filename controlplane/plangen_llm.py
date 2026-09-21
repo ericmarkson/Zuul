@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from controlplane import repo_tools
+from controlplane.eventlog import DiagnosticLog
 from controlplane.model_provider import ModelProvider
 
 SIDE_EFFECT_CLASSES = ("file-only", "package-manager-mutating", "external-service-call")
@@ -343,16 +344,30 @@ def propose_phase(
     target_repo: Path,
     max_output_tokens: int = 4000,
     max_tool_rounds: int = 8,
+    diag_log: DiagnosticLog | None = None,
 ) -> PhaseProposal:
+    """`diag_log` is optional and purely observational (DIAG-1's local-only philosophy, applied
+    to plan generation) -- FRD-DIAG-1 already gives `Runner` a verbose local log for exactly this
+    kind of "why did it decide that" question; plan generation had none until a real investigation
+    (2026-09-21) hit the wall of not being able to tell a deliberate `checks: null` decision apart
+    from a self-correction retry that quietly gave up instead of fixing the specific problem."""
+    def log(message: str) -> None:
+        if diag_log is not None:
+            diag_log.write(f"propose_phase tag={remediation_tag} component={component}: {message}")
+
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_prompt(remediation_tag, component, findings, plan_check_set)},
     ]
+    log(f"starting research loop, {len(findings)} finding(s), max_tool_rounds={max_tool_rounds}")
 
     for round_num in range(1, max_tool_rounds + 1):
         response = provider.complete_with_tools(messages, max_output_tokens, TOOLS)
+        call_names = [tc.name for tc in response.tool_calls]
+        log(f"round={round_num} tool_calls={call_names}")
 
         if not response.tool_calls:
+            log(f"round={round_num} FAILED: no tool call, content={response.content!r}")
             raise MalformedPlanProposal(
                 f"round {round_num}: model responded without calling any tool (must call finalize_proposal): {response.content!r}"
             )
@@ -366,9 +381,12 @@ def propose_phase(
         finalize_call = next((tc for tc in response.tool_calls if tc.name == "finalize_proposal"), None)
         proposal: PhaseProposal | None = None
         if finalize_call is not None:
+            checks_summary = finalize_call.arguments.get("checks")
+            log(f"round={round_num} finalize_proposal called, side_effect_class={finalize_call.arguments.get('side_effect_class')!r}, checks={'null' if checks_summary is None else f'{len(checks_summary)} check(s)'}")
             try:
                 proposal = _parse_proposal(finalize_call.arguments)
             except MalformedPlanProposal as exc:
+                log(f"round={round_num} finalize_proposal REJECTED: {exc}")
                 if round_num >= max_tool_rounds:
                     raise
                 # Give the model a chance to self-correct within the same bounded loop, the same
@@ -388,11 +406,14 @@ def propose_phase(
             if tc is finalize_call:
                 continue
             result = _execute_tool(tc.name, tc.arguments, target_repo)
+            log(f"round={round_num} tool={tc.name} args={tc.arguments} -> {result[:300]!r}")
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
         if proposal is not None:
+            log(f"round={round_num} ACCEPTED: side_effect_class={proposal.side_effect_class}, checks={'null' if proposal.checks is None else [c.id for c in proposal.checks]}")
             return proposal
 
+    log(f"FAILED: exhausted {max_tool_rounds} round(s) without a valid finalize_proposal")
     raise MalformedPlanProposal(f"plan generator did not call finalize_proposal within {max_tool_rounds} tool-call round(s)")
 
 

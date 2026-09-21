@@ -2133,3 +2133,48 @@ next.
 the user whether to execute one of the two already-generated plans as-is (to see how the current
 check quality holds up in real execution) or investigate the still-open `checks: None` observation
 first.
+
+---
+
+### 2026-09-21 — Diagnostic logging for plan generation (DIAG-1, applied to a gap Runner already had covered)
+
+User asked to look into the `checks: None` gap first. Investigated hermetically, no live spend:
+traced `_parse_proposal` -> `_validate_checks` -> `propose_phase`'s return path and confirmed
+**no code bug** -- whatever a generated plan's `checks` field holds is exactly what the model's
+own last successful `finalize_proposal` call specified; nothing silently strips a populated list.
+But could not go further than that: plan generation has had zero logging since it was built,
+unlike `Runner`, which has had a local diagnostic log (`DIAG-1`) since Phase A. Two real,
+indistinguishable-from-artifacts-alone hypotheses remained open: the model genuinely judging
+`dotnet build` sufficient for a 38-47 file phase, versus a more concerning pattern -- a
+self-correction retry (built to fix the syntax-error bug two entries ago) causing the model to
+*retreat* to `checks: null` after a rejection instead of fixing the specific problem.
+
+**Built**: `plangen_llm.propose_phase` gained an optional `diag_log: DiagnosticLog | None`
+parameter (default `None`, fully backward compatible -- every existing call site and test
+continues to pass nothing). When present, it logs every round's tool calls, each tool's
+arguments and truncated result, every `finalize_proposal` attempt's `side_effect_class`/checks
+summary, every rejection's exact validation error, and the final accepted-or-exhausted outcome --
+enough to answer, after the fact, "did it get bounced back with a specific error and then give up,
+or did it decide immediately." Threaded through `plangen.generate_phases`/`generate_plan` (both
+gained the same optional parameter) to the CLI, which now creates a `DiagnosticLog` alongside the
+generated plan file (`<out>.diagnostics.log`, mirroring `Runner`'s existing path convention) and
+prints its path on completion, same as `run` already does for its own diagnostic log.
+
+This is pure observability infrastructure, not behavior-shaping -- it doesn't touch what the
+model is told or what's allowed, so it doesn't run into the genericity concerns from the previous
+two entries. It also isn't itself the fix for the `checks: None` question -- it's what makes the
+*next* live regeneration able to answer it with evidence instead of another guess. 151/151
+hermetic tests pass (5 new, including one that reproduces the exact self-correction scenario
+under investigation and confirms both the rejection and the final decision are now visible in the
+log, not just the final plan output).
+
+**Not yet done**: an actual live regeneration to read the new log and settle which of the two
+hypotheses is real. That's the next live-money decision point, not taken yet.
+
+**What remains exactly as built, untouched by this entry**: everything from the previous two
+entries -- the generic check schema, the scope-boundary decision to stop chasing behavioral test
+invention, `INTEGRITY-3`, `QA-2`, the `APPROVAL-1` gate.
+
+**To resume cold**: read this entry, then decide with the user whether to spend a live
+regeneration to read the new diagnostic log and finally answer the `checks: None` question with
+evidence.

@@ -293,5 +293,75 @@ class DefinitionOfDoneGuidanceTests(unittest.TestCase):
         self.assertIn("deleting the code that used it", plangen_llm.SYSTEM_PROMPT)
 
 
+class DiagnosticLoggingTests(unittest.TestCase):
+    """Plan generation had zero logging until a real investigation (2026-09-21) hit a wall: a
+    phase came back with checks: null, and there was no way to tell "the model deliberately
+    judged this sufficient" apart from "a self-correction retry quietly gave up instead of
+    fixing the specific problem." `diag_log` is optional (every existing test above passes it as
+    None implicitly) and purely observational -- DIAG-1's local-only philosophy, applied here."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.log_path = Path(self._tmp.name) / "diag.log"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _read_log(self) -> str:
+        return self.log_path.read_text(encoding="utf-8") if self.log_path.exists() else ""
+
+    def test_no_diag_log_means_no_file_is_created(self):
+        provider = MockModelProvider(responses=[_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo)
+        self.assertFalse(self.log_path.exists())
+
+    def test_successful_finalize_is_logged_with_its_checks_decision(self):
+        from controlplane.eventlog import DiagnosticLog
+        diag_log = DiagnosticLog(self.log_path)
+        provider = MockModelProvider(responses=[_finalize(checks=None)])
+        plangen_llm.propose_phase(provider, "port", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, diag_log=diag_log)
+        log = self._read_log()
+        self.assertIn("tag=port", log)
+        self.assertIn("ACCEPTED: side_effect_class=file-only, checks=null", log)
+
+    def test_a_malformed_finalize_that_self_corrects_logs_both_the_rejection_and_the_final_decision(self):
+        """The exact scenario the investigation couldn't distinguish without this: does the log
+        show a rejection followed by a *fixed* retry, or a rejection followed by a retreat to
+        checks: null? Both are now visible, not just the final plan output."""
+        from controlplane.eventlog import DiagnosticLog
+        diag_log = DiagnosticLog(self.log_path)
+        provider = MockModelProvider(responses=[
+            _finalize(side_effect_class="made-up-class"),
+            _finalize(checks=None),
+        ])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, diag_log=diag_log)
+        log = self._read_log()
+        self.assertIn("finalize_proposal REJECTED", log)
+        self.assertIn("'side_effect_class' must be one of", log)
+        self.assertIn("ACCEPTED: side_effect_class=file-only, checks=null", log)
+
+    def test_tool_calls_and_their_results_are_logged(self):
+        from controlplane.eventlog import DiagnosticLog
+        diag_log = DiagnosticLog(self.log_path)
+        (self.repo / "sub").mkdir()
+        provider = MockModelProvider(responses=[
+            _tool_call("list_directory", {"path": "sub"}),
+            _finalize(),
+        ])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, diag_log=diag_log)
+        log = self._read_log()
+        self.assertIn("tool_calls=['list_directory']", log)
+        self.assertIn("tool=list_directory", log)
+
+    def test_exhausting_rounds_without_finalize_is_logged(self):
+        from controlplane.eventlog import DiagnosticLog
+        diag_log = DiagnosticLog(self.log_path)
+        provider = MockModelProvider(responses=[_tool_call("grep_repo", {"pattern": "x"})] * 2)
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, max_tool_rounds=2, diag_log=diag_log)
+        self.assertIn("FAILED: exhausted 2 round(s)", self._read_log())
+
+
 if __name__ == "__main__":
     unittest.main()

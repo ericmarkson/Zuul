@@ -131,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
             "result_artifact": "{run_dir}/results/{phase_id}/unused.xml",
             "result_format": "junit",
         }]
+
+        from controlplane.eventlog import DiagnosticLog
+
+        diag_log_path = args.out.with_name(args.out.stem + ".diagnostics.log")
+        diag_log = DiagnosticLog(diag_log_path)
+
         plan = plangen.generate_plan(
             findings_path=args.findings,
             model_provider=model_provider,
@@ -138,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id_prefix=args.run_id_prefix,
             max_output_tokens=args.llm_max_output_tokens,
             max_tool_rounds=args.llm_max_tool_rounds,
+            diag_log=diag_log,
         )
         plangen.write_plan_file(args.out, plan)
 
@@ -150,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         if dropped:
             print(f"{len(dropped)} informational finding(s) excluded (no remediation_tag): {dropped}")
         print(f"written to {args.out}")
+        print(f"diagnostic_log={diag_log_path}")
         return 0
 
     return 1
