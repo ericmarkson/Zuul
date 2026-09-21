@@ -148,6 +148,53 @@ class BudgetedProviderTests(unittest.TestCase):
             budgeted.complete_with_tools([{"role": "user", "content": "u"}], 100, tools=[])
         self.assertEqual(mock.tool_calls_log, [])
 
+    def test_complete_with_mcp_shares_the_same_budget_accounting(self):
+        mock = MockModelProvider(responses=[_tool_response("finalize_proposal", {"checks": None}, 20, 20)])
+        budgeted = BudgetedProvider(
+            inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000,
+            wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60,
+        )
+        result = budgeted.complete_with_mcp([{"role": "user", "content": "u"}], 100, tools=[], mcp_servers=[{"type": "mcp"}])
+        self.assertEqual(result.tool_calls[0].name, "finalize_proposal")
+        self.assertEqual(budgeted.run_tokens_used, 40)
+
+    def test_complete_with_mcp_refuses_before_calling_inner_when_budget_already_exhausted(self):
+        mock = MockModelProvider(responses=[_tool_response("read_file", {"path": "a"})])
+        budgeted = BudgetedProvider(
+            inner=mock, max_tokens_per_phase=0, max_tokens_per_run=1000,
+            wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60,
+        )
+        with self.assertRaises(BudgetExceeded):
+            budgeted.complete_with_mcp([{"role": "user", "content": "u"}], 100, tools=[], mcp_servers=[])
+        self.assertEqual(mock.mcp_calls_log, [])
+
+    def test_complete_with_mcp_forwards_previous_response_id_to_the_inner_provider(self):
+        mock = MockModelProvider(responses=[_response("ok")])
+        budgeted = BudgetedProvider(
+            inner=mock, max_tokens_per_phase=1000, max_tokens_per_run=1000,
+            wall_clock_limit_per_phase_seconds=60, wall_clock_limit_per_run_seconds=60,
+        )
+        budgeted.complete_with_mcp([{"role": "user", "content": "u"}], 100, tools=[], mcp_servers=[], previous_response_id="resp-123")
+        self.assertEqual(mock.mcp_calls_log[0]["previous_response_id"], "resp-123")
+
+
+class MockProviderMcpTests(unittest.TestCase):
+    def test_complete_with_mcp_returns_scripted_response_and_logs_the_call(self):
+        mock = MockModelProvider(responses=[_response("ok")])
+        mcp_servers = [{"type": "mcp", "server_label": "docs", "server_url": "https://example.com/mcp"}]
+        result = mock.complete_with_mcp([{"role": "user", "content": "u"}], 100, tools=[], mcp_servers=mcp_servers, previous_response_id="prev-1")
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(mock.mcp_calls_log, [{
+            "input_items": [{"role": "user", "content": "u"}],
+            "mcp_servers": mcp_servers,
+            "previous_response_id": "prev-1",
+        }])
+
+    def test_complete_with_mcp_response_id_defaults_to_none(self):
+        mock = MockModelProvider(responses=[_response("ok")])
+        result = mock.complete_with_mcp([{"role": "user", "content": "u"}], 100, tools=[], mcp_servers=[])
+        self.assertIsNone(result.response_id)
+
 
 if __name__ == "__main__":
     unittest.main()

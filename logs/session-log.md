@@ -2211,3 +2211,102 @@ live spend this entry: ~$0.47 (one `generate-plan` call).
 
 **To resume cold**: this specific investigation is closed; read this entry for the conclusion,
 then decide with the user what to work on next -- no open thread requires immediate action.
+
+---
+
+### 2026-09-21 — `KNOWLEDGE-1`'s v2 promotion built: the researcher can consult a real, live, generic MCP server before the freeze
+
+Asked "what's next" after the `checks: None` investigation closed. User named `KNOWLEDGE-1`'s
+deferred MCP promotion as "EXTREMELY important," specifically Microsoft Learn's public docs MCP
+server (`https://learn.microsoft.com/api/mcp`) for anything .NET, and asked what steps to take.
+
+**Researched the actual facts before proposing anything, rather than guess.** Confirmed via
+`WebSearch`/`WebFetch`: Microsoft's server is public, unauthenticated, streamable-HTTP, exposing
+`microsoft_docs_search`/`microsoft_docs_fetch`/`microsoft_code_sample_search`. More importantly:
+**OpenAI's native remote-MCP tool support exists only in the Responses API, not the
+Chat-Completions API** this project's whole provider layer is built on -- confirmed, then a first
+search result's over-alarming claim that Chat Completions itself was being deprecated was
+double-checked and found wrong (that was conflating it with the Assistants API's real August
+2026 sunset; Chat Completions remains supported). Net effect: adding native MCP meant a real,
+scoped provider-layer addition (a new method using `responses.create`), not a forced migration
+of anything already working.
+
+**User then sharpened the placement question directly**: "based on the audit, we would have the
+researcher use the declared MCPs to define some additional steps and definitions of done." Confirmed
+this is not just a reasonable idea but the *only* architecturally consistent placement, for a
+reason already established earlier this session: `PLAN-5` freezes a phase's scope and checks at
+the approval gate, and the implementer can never renegotiate them afterward -- so any external
+grounding meant to inform *what a phase's steps or checks should be* has to happen before that
+freeze, i.e. in the researcher (`plangen_llm.py`), not the implementer. Same reasoning that
+already put the local `grep_repo` research loop where it is. Corrected an earlier, less-considered
+"implementer first" suggestion on this basis.
+
+**Built, hermetic-only, no live spend**:
+- `controlplane/model_provider.py`: `ModelResponse` gains an optional `response_id` (the
+  Responses API's own conversation-state marker -- MCP calls execute entirely server-side against
+  the declared server; this project's code never sees or dispatches their contents, only carries
+  the id forward so the model keeps that context). New `ModelProvider.complete_with_mcp(input_items,
+  max_output_tokens, tools, mcp_servers, previous_response_id)` on all three implementations
+  (`MockModelProvider` with a new `mcp_calls_log`, `BudgetedProvider` sharing the exact same
+  `_pre_call_cap`/`_record_usage` budget accounting as the other two methods, `OpenAIProvider`
+  actually calling `responses.create`, reshaping this project's Chat-Completions-style `TOOLS`
+  list into the Responses API's flatter function-tool shape and combining it with the declared
+  MCP server(s) in one `tools` array). `complete()`/`complete_with_tools()` are completely
+  untouched -- this is a pure addition, same discipline as when `complete_with_tools` was added
+  alongside `complete` for the implementer's tool loop.
+- `controlplane/plangen_llm.py`: `propose_phase` gained an optional `mcp_servers: list[dict] | None`
+  parameter and now dispatches to one of two loop bodies -- the existing stateless
+  `_propose_phase_local` (unchanged, used whenever `mcp_servers` is falsy) or a new
+  `_propose_phase_with_mcp`, mechanically different (the Responses API's stateful
+  `previous_response_id`, where only the *new* items since the last call are sent, versus the
+  local loop's growing-message-list resend) but sharing the same `_parse_proposal`/
+  `_validate_checks`/self-correction/`diag_log` machinery and the identical `PhaseProposal`
+  return shape. A new `MCP_GUIDANCE_ADDENDUM`, appended to `SYSTEM_PROMPT` only in the MCP path,
+  is deliberately generic ("an external, authoritative documentation source has been connected
+  ... do not assume it is named or scoped the way any particular one you've seen before is") --
+  no Microsoft-specific wording anywhere in this project's own prompt; the actual tool names and
+  descriptions come from the MCP server's own self-reported definitions, auto-discovered by
+  OpenAI's infrastructure, never hardcoded here.
+- `controlplane/plangen.py`: `generate_phases`/`generate_plan` gained a pass-through
+  `mcp_servers` parameter -- no dispatch logic of its own, that all lives in `plangen_llm.py`.
+- `controlplane/cli.py`: `generate-plan` gained `--mcp-server-url`/`--mcp-server-label`/
+  `--mcp-server-description`/`--mcp-allowed-tools`, all optional and generic (no
+  Microsoft-specific default beyond the label defaulting to the neutral `"external-docs"`).
+  When a URL is supplied, the CLI prints which server is enabled and a `DISCLOSE-1`-style note
+  before generation runs: queries the researcher constructs go from OpenAI's own infrastructure
+  directly to that server, never through this project's code, and never including repo file
+  contents unless the model's own query text happens to.
+- `FRD.md` `KNOWLEDGE-1` split, honestly: the *literal* original claim (the knowledge pack itself
+  served via MCP) stays v2, unmet -- what got promoted to v1 is a related but distinct case
+  (plan-generation-time consultation of a third-party MCP server, not the pack's own tools,
+  and not mid-phase) that turned out to be a stronger justification for MCP than the original
+  trigger anticipated.
+
+**Test coverage**: 18 new tests across `test_model_provider.py` (budget accounting parity for
+`complete_with_mcp`, `previous_response_id` forwarding, `MockModelProvider`'s new log),
+`test_plangen_llm.py` (dispatch routing between the two loops, immediate finalize, `mcp_servers`
+passed through faithfully, the addendum appearing only in the MCP path, `previous_response_id`
+threading across rounds, confirmation that round-2's `input_items` hold *only* the new tool
+output and not the whole history -- the actual mechanical difference from the local loop --
+self-correction still working, exhausted-rounds still raising, diagnostic logging), and
+`test_plangen.py` (the plain pass-through). 169/169 hermetic tests pass.
+
+**Not yet done, deliberately**: any live call to a real MCP server (Microsoft Learn's or any
+other) or the real OpenAI Responses API. `reasoning_effort="none"` was applied to
+`complete_with_mcp` defensively, mirroring the real bug found live for `complete_with_tools`
+(gpt-5.6-sol's chat-completions endpoint rejects function tools with non-`"none"`
+reasoning_effort) -- but that specific finding was about the Chat Completions endpoint, and
+whether the same restriction applies to the Responses API has **not been confirmed live**. This
+is exactly the kind of assumption this project's own practice says must be checked, not trusted,
+the first time real money is spent on it -- flagged explicitly for whoever runs the first live
+validation.
+
+**What remains exactly as built, untouched by this entry**: `INTEGRITY-3`, `QA-2`, the
+`APPROVAL-1` gate, every other provider method, the local research loop, the implementer's tool
+loop -- this is purely additive.
+
+**To resume cold**: read this entry, then decide with the user whether to spend the first live
+validation (a real `generate-plan` call with `--mcp-server-url https://learn.microsoft.com/api/mcp`
+against the real repo) -- budget heads-up required first, per the user's standing instruction
+from earlier this session. Watch specifically for whether the `reasoning_effort="none"`
+assumption holds on the Responses API, since that has not been verified.

@@ -301,5 +301,36 @@ class BehavioralCheckFixtureTests(unittest.TestCase):
             self.assertEqual(loaded.phases[0].check_fixtures[0].content, "// real test")
 
 
+class McpServersThreadingTests(unittest.TestCase):
+    """`generate_phases`/`generate_plan` just have to forward `mcp_servers` to `propose_phase` --
+    the loop dispatch logic itself is `plangen_llm.py`'s responsibility, already covered there."""
+
+    def test_generate_phases_forwards_mcp_servers_to_propose_phase(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "project-format", "affected_paths": ["src/A/A.csproj"], "description": "d1", "remediation_tag": "fix-a"},
+        ])
+        mcp_servers = [{"type": "mcp", "server_label": "docs", "server_url": "https://example.com/mcp"}]
+        provider = MockModelProvider(responses=[ModelResponse(
+            content="", input_tokens=10, output_tokens=10, latency_seconds=0.01,
+            tool_calls=(ToolCall(id="c1", name="finalize_proposal", arguments={
+                "side_effect_class": "file-only", "description": "d", "additional_scope": [], "checks": None,
+            }),),
+            response_id="resp-1",
+        )])
+        phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET, mcp_servers=mcp_servers)
+        self.assertEqual(len(phases), 1)
+        self.assertEqual(provider.mcp_calls_log[0]["mcp_servers"], mcp_servers)
+        self.assertEqual(provider.tool_calls_log, [])
+
+    def test_no_mcp_servers_means_the_local_loop_runs_as_before(self):
+        doc = _doc([
+            {"id": "FIND-001", "category": "project-format", "affected_paths": ["src/A/A.csproj"], "description": "d1", "remediation_tag": "fix-a"},
+        ])
+        provider = MockModelProvider(responses=[_proposal_response("file-only")])
+        phases, _ = plangen.generate_phases(doc, provider, SAMPLE_CHECK_SET)
+        self.assertEqual(len(phases), 1)
+        self.assertEqual(provider.mcp_calls_log, [])
+
+
 if __name__ == "__main__":
     unittest.main()

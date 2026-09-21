@@ -36,12 +36,27 @@ class ModelResponse:
     # Populated only by complete_with_tools -- the bounded multi-step agentic implementer
     # (2026-09-20 pivot, point 2). Empty for every plain complete() response.
     tool_calls: tuple[ToolCall, ...] = ()
+    # Populated only by complete_with_mcp (2026-09-21, KNOWLEDGE-1's v2 promotion trigger) --
+    # the Responses API's own conversation-state marker. Remote MCP tool calls (e.g. a docs
+    # search) are executed entirely server-side by OpenAI against the declared MCP server, never
+    # by this project's own code; passing this id back on the next call is what lets the model
+    # keep that context without us having to re-transmit or even see the MCP call's contents.
+    response_id: str | None = None
 
 
 class ModelProvider(Protocol):
     def complete(self, system_prompt: str, user_prompt: str, max_output_tokens: int) -> ModelResponse: ...
 
     def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse: ...
+
+    def complete_with_mcp(
+        self,
+        input_items: list[dict],
+        max_output_tokens: int,
+        tools: list[dict],
+        mcp_servers: list[dict],
+        previous_response_id: str | None = None,
+    ) -> ModelResponse: ...
 
 
 @dataclass
@@ -54,6 +69,7 @@ class MockModelProvider:
     responses: list[ModelResponse | Exception] = field(default_factory=list)
     calls: list[tuple[str, str]] = field(default_factory=list)
     tool_calls_log: list[list[dict]] = field(default_factory=list)
+    mcp_calls_log: list[dict] = field(default_factory=list)
 
     def _next(self) -> ModelResponse:
         if not self.responses:
@@ -74,6 +90,20 @@ class MockModelProvider:
         # a stricter equality assertion in test_plangen_llm.py; prior tests only ever used
         # assertIn against these logs, which happens to pass either way and never caught it.
         self.tool_calls_log.append(list(messages))
+        return self._next()
+
+    def complete_with_mcp(
+        self,
+        input_items: list[dict],
+        max_output_tokens: int,
+        tools: list[dict],
+        mcp_servers: list[dict],
+        previous_response_id: str | None = None,
+    ) -> ModelResponse:
+        self.mcp_calls_log.append({
+            "input_items": list(input_items), "mcp_servers": mcp_servers,
+            "previous_response_id": previous_response_id,
+        })
         return self._next()
 
 
@@ -163,6 +193,77 @@ class OpenAIProvider:
             tool_calls=tool_calls,
         )
 
+    @staticmethod
+    def _to_responses_api_tool_shape(tools: list[dict]) -> list[dict]:
+        """The Responses API's function-tool declaration is flat (`{"type", "name", ...}`) --
+        Chat Completions nests the same fields under a `"function"` key. This project's own
+        TOOLS lists (llm_implementer.py, plangen_llm.py) are written once, in the Chat
+        Completions shape, since that is still the primary path; this re-shapes them for the one
+        method that needs the Responses API instead of introducing a second copy to maintain."""
+        reshaped = []
+        for t in tools:
+            if t.get("type") == "function" and "function" in t:
+                fn = t["function"]
+                reshaped.append({"type": "function", "name": fn["name"], "description": fn.get("description", ""), "parameters": fn.get("parameters", {})})
+            else:
+                reshaped.append(t)
+        return reshaped
+
+    def complete_with_mcp(
+        self,
+        input_items: list[dict],
+        max_output_tokens: int,
+        tools: list[dict],
+        mcp_servers: list[dict],
+        previous_response_id: str | None = None,
+    ) -> ModelResponse:
+        """The Responses API is the only place OpenAI's native remote-MCP tool support lives
+        (2026-09-21, `KNOWLEDGE-1`'s v2 promotion trigger). A remote MCP tool call (e.g. a real
+        docs search against a knowledge-pack-declared server) is executed entirely server-side --
+        this project's own code never sees its contents, never dispatches it, and never needs to
+        translate it -- only `previous_response_id` needs to flow forward so the model keeps that
+        context on the next call, same as the growing `messages` list does for the local-only
+        `complete_with_tools` path. `input_items` on every call after the first should therefore
+        only be the *new* items since the last call (typically this project's own local tool
+        results) -- the rest of the conversation, including any MCP call, is already on OpenAI's
+        server under `previous_response_id`."""
+        start = time.monotonic()
+        response = self._client.responses.create(
+            model=self.model,
+            input=input_items,
+            previous_response_id=previous_response_id,
+            max_output_tokens=max_output_tokens,
+            # Mirrors complete_with_tools' finding: function tools plus a non-"none"
+            # reasoning_effort were rejected on the chat-completions endpoint for this model;
+            # applied here defensively pending live confirmation against the Responses API.
+            reasoning_effort="none",
+            tools=[*self._to_responses_api_tool_shape(tools), *mcp_servers],
+            tool_choice="auto",
+        )
+        latency = time.monotonic() - start
+
+        tool_calls = tuple(
+            ToolCall(id=item.call_id, name=item.name, arguments=json.loads(item.arguments or "{}"))
+            for item in response.output
+            if item.type == "function_call"
+        )
+        content = "\n".join(
+            part.text
+            for item in response.output
+            if item.type == "message"
+            for part in item.content
+            if part.type == "output_text"
+        )
+        usage = response.usage
+        return ModelResponse(
+            content=content,
+            input_tokens=usage.input_tokens if usage else 0,
+            output_tokens=usage.output_tokens if usage else 0,
+            latency_seconds=latency,
+            tool_calls=tool_calls,
+            response_id=response.id,
+        )
+
 
 # Published pricing for gpt-5.6-sol as of 2026-09-20 (promotional rate through 2026-11-21):
 # https://developers.openai.com/api/docs/models/gpt-5.6-sol
@@ -249,5 +350,18 @@ class BudgetedProvider:
     def complete_with_tools(self, messages: list[dict], max_output_tokens: int, tools: list[dict]) -> ModelResponse:
         capped_max_output = self._pre_call_cap(max_output_tokens)
         response = self.inner.complete_with_tools(messages, capped_max_output, tools)
+        self._record_usage(response)
+        return response
+
+    def complete_with_mcp(
+        self,
+        input_items: list[dict],
+        max_output_tokens: int,
+        tools: list[dict],
+        mcp_servers: list[dict],
+        previous_response_id: str | None = None,
+    ) -> ModelResponse:
+        capped_max_output = self._pre_call_cap(max_output_tokens)
+        response = self.inner.complete_with_mcp(input_items, capped_max_output, tools, mcp_servers, previous_response_id)
         self._record_usage(response)
         return response

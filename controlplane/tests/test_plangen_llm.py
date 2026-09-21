@@ -363,5 +363,128 @@ class DiagnosticLoggingTests(unittest.TestCase):
         self.assertIn("FAILED: exhausted 2 round(s)", self._read_log())
 
 
+SAMPLE_MCP_SERVERS = [{"type": "mcp", "server_label": "docs", "server_url": "https://example.com/mcp", "require_approval": "never"}]
+
+
+def _mcp_finalize(side_effect_class="file-only", description="migrate config", additional_scope=None, checks=None, call_id="call-1", response_id="resp-1") -> ModelResponse:
+    return ModelResponse(
+        content="", input_tokens=10, output_tokens=10, latency_seconds=0.01,
+        tool_calls=(ToolCall(id=call_id, name="finalize_proposal", arguments={
+            "side_effect_class": side_effect_class, "description": description,
+            "additional_scope": additional_scope or [], "checks": checks,
+        }),),
+        response_id=response_id,
+    )
+
+
+def _mcp_tool_call(name: str, arguments: dict, call_id: str = "call-1", response_id: str = "resp-1") -> ModelResponse:
+    return ModelResponse(
+        content="", input_tokens=10, output_tokens=10, latency_seconds=0.01,
+        tool_calls=(ToolCall(id=call_id, name=name, arguments=arguments),), response_id=response_id,
+    )
+
+
+class McpResearchLoopTests(unittest.TestCase):
+    """`KNOWLEDGE-1`'s v2 promotion, 2026-09-21: an optional, knowledge-pack-declared remote MCP
+    server (e.g. an authoritative docs search) available to the researcher alongside its
+    existing local tools, before PLAN-5 freezes scope and checks. Dispatches to a mechanically
+    different loop (Responses API's stateful `previous_response_id`, not the local stateless
+    growing-message-list shape) but the same validation/self-correction/return-shape guarantees."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_mcp_servers_uses_the_local_loop(self):
+        provider = MockModelProvider(responses=[_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=None)
+        self.assertEqual(len(provider.tool_calls_log), 1)
+        self.assertEqual(provider.mcp_calls_log, [])
+
+    def test_mcp_servers_provided_uses_the_mcp_loop(self):
+        provider = MockModelProvider(responses=[_mcp_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        self.assertEqual(provider.tool_calls_log, [])
+        self.assertEqual(len(provider.mcp_calls_log), 1)
+
+    def test_mcp_loop_immediate_finalize_parses(self):
+        provider = MockModelProvider(responses=[_mcp_finalize(additional_scope=["appsettings.json"])])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        self.assertEqual(proposal.additional_scope, ["appsettings.json"])
+
+    def test_mcp_servers_are_passed_through_to_the_provider_call(self):
+        provider = MockModelProvider(responses=[_mcp_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        self.assertEqual(provider.mcp_calls_log[0]["mcp_servers"], SAMPLE_MCP_SERVERS)
+
+    def test_system_prompt_addendum_is_included_only_for_the_mcp_loop(self):
+        provider = MockModelProvider(responses=[_mcp_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        system_content = provider.mcp_calls_log[0]["input_items"][0]["content"]
+        self.assertIn("authoritative documentation source", system_content)
+
+        provider2 = MockModelProvider(responses=[_finalize()])
+        plangen_llm.propose_phase(provider2, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=None)
+        self.assertNotIn("authoritative documentation source", plangen_llm.SYSTEM_PROMPT)
+
+    def test_previous_response_id_threads_across_rounds(self):
+        provider = MockModelProvider(responses=[
+            _mcp_tool_call("grep_repo", {"pattern": "x"}, response_id="resp-round-1"),
+            _mcp_finalize(response_id="resp-round-2"),
+        ])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        self.assertIsNone(provider.mcp_calls_log[0]["previous_response_id"])
+        self.assertEqual(provider.mcp_calls_log[1]["previous_response_id"], "resp-round-1")
+
+    def test_round_2_input_items_hold_only_the_new_tool_output_not_the_whole_history(self):
+        """The whole point of the stateful design: unlike the local loop, which resends every
+        message every round, only the *new* tool result should be sent -- the rest lives on
+        OpenAI's server under previous_response_id."""
+        (self.repo / "a.txt").write_text("hello", encoding="utf-8")
+        provider = MockModelProvider(responses=[
+            _mcp_tool_call("read_file", {"path": "a.txt"}),
+            _mcp_finalize(),
+        ])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+        round_2_items = provider.mcp_calls_log[1]["input_items"]
+        self.assertEqual(round_2_items, [{"type": "function_call_output", "call_id": "call-1", "output": "hello"}])
+
+    def test_malformed_finalize_self_corrects_within_the_mcp_loop(self):
+        provider = MockModelProvider(responses=[
+            _mcp_finalize(side_effect_class="made-up-class", response_id="resp-1"),
+            _mcp_finalize(response_id="resp-2"),
+        ])
+        proposal = plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS, max_tool_rounds=5)
+        self.assertEqual(proposal.side_effect_class, "file-only")
+        round_2_items = provider.mcp_calls_log[1]["input_items"]
+        self.assertEqual(len(round_2_items), 1)
+        self.assertIn("invalid", round_2_items[0]["output"])
+
+    def test_exhausting_rounds_without_finalize_raises(self):
+        provider = MockModelProvider(responses=[_mcp_tool_call("grep_repo", {"pattern": "x"})] * 2)
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS, max_tool_rounds=2)
+        self.assertEqual(len(provider.mcp_calls_log), 2)
+
+    def test_response_with_no_tool_call_raises(self):
+        provider = MockModelProvider(responses=[ModelResponse(content="no tool call", input_tokens=5, output_tokens=5, latency_seconds=0.01, response_id="resp-1")])
+        with self.assertRaises(plangen_llm.MalformedPlanProposal):
+            plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS)
+
+    def test_diag_log_records_mcp_specific_lines(self):
+        from controlplane.eventlog import DiagnosticLog
+        log_path = Path(self._tmp.name) / "diag.log"
+        diag_log = DiagnosticLog(log_path)
+        provider = MockModelProvider(responses=[_mcp_finalize()])
+        plangen_llm.propose_phase(provider, "t", "(repo-root)", SAMPLE_FINDINGS, SAMPLE_CHECK_SET, self.repo, mcp_servers=SAMPLE_MCP_SERVERS, diag_log=diag_log)
+        log = log_path.read_text(encoding="utf-8")
+        self.assertIn("propose_phase[mcp]", log)
+        self.assertIn("starting MCP-enabled research loop", log)
+        self.assertIn("servers=['docs']", log)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,7 @@ def _component_for(finding: dict, project_dirs: set[str]) -> str:
     return best or "(repo-root)"
 
 
-def generate_phases(findings_document: dict, model_provider: ModelProvider, check_set: list[dict], max_output_tokens: int = 4000, max_tool_rounds: int = 8, diag_log: DiagnosticLog | None = None) -> tuple[list[dict], list[str]]:
+def generate_phases(findings_document: dict, model_provider: ModelProvider, check_set: list[dict], max_output_tokens: int = 4000, max_tool_rounds: int = 8, diag_log: DiagnosticLog | None = None, mcp_servers: list[dict] | None = None) -> tuple[list[dict], list[str]]:
     """Returns (phases, dropped_finding_ids). A finding with no remediation_tag is
     informational -- there is nothing to group it into a phase for -- and is dropped from the
     plan, but never silently: its id is returned so the caller can record it, matching the
@@ -85,7 +85,7 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
         tag, component = key
         group = groups[key]
 
-        proposal = plangen_llm.propose_phase(model_provider, tag, component, group, check_set, target_repo, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds, diag_log=diag_log)
+        proposal = plangen_llm.propose_phase(model_provider, tag, component, group, check_set, target_repo, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds, diag_log=diag_log, mcp_servers=mcp_servers)
 
         affected_paths = sorted({p for f in group for p in f["affected_paths"]})
         finding_ids = sorted(f["id"] for f in group)
@@ -112,9 +112,9 @@ def generate_phases(findings_document: dict, model_provider: ModelProvider, chec
     return phases, dropped
 
 
-def generate_plan(findings_path: Path, model_provider: ModelProvider, check_set: list[dict], run_id_prefix: str, max_output_tokens: int = 4000, max_tool_rounds: int = 8, diag_log: DiagnosticLog | None = None) -> dict:
+def generate_plan(findings_path: Path, model_provider: ModelProvider, check_set: list[dict], run_id_prefix: str, max_output_tokens: int = 4000, max_tool_rounds: int = 8, diag_log: DiagnosticLog | None = None, mcp_servers: list[dict] | None = None) -> dict:
     document = load_findings_file(findings_path)
-    phases, dropped = generate_phases(document, model_provider, check_set, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds, diag_log=diag_log)
+    phases, dropped = generate_phases(document, model_provider, check_set, max_output_tokens=max_output_tokens, max_tool_rounds=max_tool_rounds, diag_log=diag_log, mcp_servers=mcp_servers)
 
     description = (
         f"Generated {document['generated_at']} from '{document['pack']}' audit of "

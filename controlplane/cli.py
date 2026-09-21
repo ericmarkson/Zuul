@@ -65,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     gen_parser.add_argument("--llm-max-tool-rounds", type=int, default=8, help="bounded research loop per finding-group (grep_repo/list_directory/read_file, then finalize_proposal)")
     gen_parser.add_argument("--max-tokens-total", type=int, default=50000, help="BUDGET-1, applied to this whole generation batch")
     gen_parser.add_argument("--wall-clock-seconds", type=float, default=600, help="BUDGET-1, applied to this whole generation batch")
+    gen_parser.add_argument("--mcp-server-url", default=None, help="KNOWLEDGE-1 v2: an optional remote MCP server URL (e.g. a domain-specific docs search) the researcher may consult before finalizing a phase. Generic -- not tied to any one domain or provider.")
+    gen_parser.add_argument("--mcp-server-label", default="external-docs", help="Label for --mcp-server-url, shown to the model as the tool's server identity")
+    gen_parser.add_argument("--mcp-server-description", default=None, help="Optional description of what --mcp-server-url provides, shown to the model")
+    gen_parser.add_argument("--mcp-allowed-tools", nargs="+", default=None, help="Optional allowlist restricting which tools from --mcp-server-url are exposed; omit to allow all the server offers")
 
     args = parser.parse_args(argv)
 
@@ -137,6 +141,23 @@ def main(argv: list[str] | None = None) -> int:
         diag_log_path = args.out.with_name(args.out.stem + ".diagnostics.log")
         diag_log = DiagnosticLog(diag_log_path)
 
+        mcp_servers = None
+        if args.mcp_server_url:
+            # KNOWLEDGE-1 v2: a generic, pack-or-operator-declared remote MCP server -- nothing
+            # here names or assumes any particular one. DISCLOSE-1's spirit extended: printed
+            # below so this is visible before the researcher ever runs, the same way a model
+            # provider's use is disclosed at the run-time gate.
+            server = {"type": "mcp", "server_label": args.mcp_server_label, "server_url": args.mcp_server_url, "require_approval": "never"}
+            if args.mcp_server_description:
+                server["server_description"] = args.mcp_server_description
+            if args.mcp_allowed_tools:
+                server["allowed_tools"] = args.mcp_allowed_tools
+            mcp_servers = [server]
+            print(f"MCP server enabled for this generation: label={args.mcp_server_label!r} url={args.mcp_server_url!r}")
+            print("  Whatever search/fetch queries the researcher constructs are sent by OpenAI's")
+            print("  infrastructure directly to this server -- not through this project's own code,")
+            print("  and never including repo file contents unless the model's own query text does.")
+
         plan = plangen.generate_plan(
             findings_path=args.findings,
             model_provider=model_provider,
@@ -145,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             max_output_tokens=args.llm_max_output_tokens,
             max_tool_rounds=args.llm_max_tool_rounds,
             diag_log=diag_log,
+            mcp_servers=mcp_servers,
         )
         plangen.write_plan_file(args.out, plan)
 

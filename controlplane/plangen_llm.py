@@ -345,12 +345,39 @@ def propose_phase(
     max_output_tokens: int = 4000,
     max_tool_rounds: int = 8,
     diag_log: DiagnosticLog | None = None,
+    mcp_servers: list[dict] | None = None,
 ) -> PhaseProposal:
     """`diag_log` is optional and purely observational (DIAG-1's local-only philosophy, applied
     to plan generation) -- FRD-DIAG-1 already gives `Runner` a verbose local log for exactly this
     kind of "why did it decide that" question; plan generation had none until a real investigation
     (2026-09-21) hit the wall of not being able to tell a deliberate `checks: null` decision apart
-    from a self-correction retry that quietly gave up instead of fixing the specific problem."""
+    from a self-correction retry that quietly gave up instead of fixing the specific problem.
+
+    `mcp_servers` is optional and empty by default -- when a knowledge pack (or an operator,
+    v1) declares one or more remote MCP servers for this domain (e.g. an authoritative docs
+    search, `KNOWLEDGE-1`'s v2 promotion trigger), the researcher gets those tools alongside its
+    existing local ones, *before* `PLAN-5` freezes scope and checks -- the same reasoning that
+    already put local repo research here rather than in the implementer: whatever grounding a
+    phase's scope or definition-of-done needs has to happen before the freeze to be actionable.
+    Dispatches to a different loop mechanically (the Responses API's stateful
+    `previous_response_id` versus the local, stateless growing-message-list loop) but nothing
+    about validation, self-correction, or the returned `PhaseProposal` shape differs."""
+    if mcp_servers:
+        return _propose_phase_with_mcp(provider, remediation_tag, component, findings, plan_check_set, target_repo, mcp_servers, max_output_tokens, max_tool_rounds, diag_log)
+    return _propose_phase_local(provider, remediation_tag, component, findings, plan_check_set, target_repo, max_output_tokens, max_tool_rounds, diag_log)
+
+
+def _propose_phase_local(
+    provider: ModelProvider,
+    remediation_tag: str,
+    component: str,
+    findings: list[dict],
+    plan_check_set: list[dict],
+    target_repo: Path,
+    max_output_tokens: int,
+    max_tool_rounds: int,
+    diag_log: DiagnosticLog | None,
+) -> PhaseProposal:
     def log(message: str) -> None:
         if diag_log is not None:
             diag_log.write(f"propose_phase tag={remediation_tag} component={component}: {message}")
@@ -408,6 +435,92 @@ def propose_phase(
             result = _execute_tool(tc.name, tc.arguments, target_repo)
             log(f"round={round_num} tool={tc.name} args={tc.arguments} -> {result[:300]!r}")
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+        if proposal is not None:
+            log(f"round={round_num} ACCEPTED: side_effect_class={proposal.side_effect_class}, checks={'null' if proposal.checks is None else [c.id for c in proposal.checks]}")
+            return proposal
+
+    log(f"FAILED: exhausted {max_tool_rounds} round(s) without a valid finalize_proposal")
+    raise MalformedPlanProposal(f"plan generator did not call finalize_proposal within {max_tool_rounds} tool-call round(s)")
+
+
+MCP_GUIDANCE_ADDENDUM = """
+
+Additional research tools are available for this domain: an external, authoritative \
+documentation source has been connected (see the tool list for its actual name and \
+description -- do not assume it is named or scoped the way any particular one you've seen \
+before is). Use it, alongside grep_repo/list_directory/read_file, to ground your understanding \
+of official, current guidance for any API, pattern, or migration path relevant to this \
+remediation -- especially useful for a TRANSFORM phase's positive-survival check, and for any \
+additional_scope the audit's findings may not have covered."""
+
+
+def _propose_phase_with_mcp(
+    provider: ModelProvider,
+    remediation_tag: str,
+    component: str,
+    findings: list[dict],
+    plan_check_set: list[dict],
+    target_repo: Path,
+    mcp_servers: list[dict],
+    max_output_tokens: int,
+    max_tool_rounds: int,
+    diag_log: DiagnosticLog | None,
+) -> PhaseProposal:
+    """The Responses API's remote MCP tool calls are executed entirely server-side -- this
+    project's code never sees their contents, never dispatches them, and never translates them.
+    Only `previous_response_id` needs to carry forward so the model keeps that context on its
+    next call; `input_items` on every call after the first therefore holds only the *new* items
+    since the last call (this project's own local tool results), not the whole conversation --
+    the stateless growing-message-list shape `_propose_phase_local` uses doesn't apply here."""
+    def log(message: str) -> None:
+        if diag_log is not None:
+            diag_log.write(f"propose_phase[mcp] tag={remediation_tag} component={component}: {message}")
+
+    log(f"starting MCP-enabled research loop, {len(findings)} finding(s), max_tool_rounds={max_tool_rounds}, servers={[s.get('server_label', s.get('type')) for s in mcp_servers]}")
+
+    input_items: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT + MCP_GUIDANCE_ADDENDUM},
+        {"role": "user", "content": build_user_prompt(remediation_tag, component, findings, plan_check_set)},
+    ]
+    previous_response_id: str | None = None
+
+    for round_num in range(1, max_tool_rounds + 1):
+        response = provider.complete_with_mcp(input_items, max_output_tokens, TOOLS, mcp_servers, previous_response_id)
+        previous_response_id = response.response_id
+        call_names = [tc.name for tc in response.tool_calls]
+        log(f"round={round_num} response_id={previous_response_id} tool_calls={call_names}")
+
+        if not response.tool_calls:
+            log(f"round={round_num} FAILED: no local tool call, content={response.content!r}")
+            raise MalformedPlanProposal(
+                f"round {round_num}: model responded without calling any tool (must call finalize_proposal): {response.content!r}"
+            )
+
+        finalize_call = next((tc for tc in response.tool_calls if tc.name == "finalize_proposal"), None)
+        proposal: PhaseProposal | None = None
+        input_items = []
+
+        if finalize_call is not None:
+            checks_summary = finalize_call.arguments.get("checks")
+            log(f"round={round_num} finalize_proposal called, side_effect_class={finalize_call.arguments.get('side_effect_class')!r}, checks={'null' if checks_summary is None else f'{len(checks_summary)} check(s)'}")
+            try:
+                proposal = _parse_proposal(finalize_call.arguments)
+            except MalformedPlanProposal as exc:
+                log(f"round={round_num} finalize_proposal REJECTED: {exc}")
+                if round_num >= max_tool_rounds:
+                    raise
+                input_items.append({
+                    "type": "function_call_output", "call_id": finalize_call.id,
+                    "output": f"error: your proposal was invalid: {exc}. Call finalize_proposal again with a corrected proposal.",
+                })
+
+        for tc in response.tool_calls:
+            if tc is finalize_call:
+                continue
+            result = _execute_tool(tc.name, tc.arguments, target_repo)
+            log(f"round={round_num} tool={tc.name} args={tc.arguments} -> {result[:300]!r}")
+            input_items.append({"type": "function_call_output", "call_id": tc.id, "output": result})
 
         if proposal is not None:
             log(f"round={round_num} ACCEPTED: side_effect_class={proposal.side_effect_class}, checks={'null' if proposal.checks is None else [c.id for c in proposal.checks]}")
