@@ -165,13 +165,21 @@ template to it.
    self-correction retry), and a hollow-stub `RegisterController` that satisfied its own
    survival-check regex with zero real logic. Led to the behavioral-checks generalization — see
    the "FIFTH LIVE RUN" decision-log entry above.
-9. **Next, if picked up, and gated on a budget check-in first (user's explicit instruction)**:
-   live-validate the behavioral-checks mechanism — regenerate a plan against the real repo and
-   confirm a researcher actually chooses to author a real `dotnet test` fixture for a TRANSFORM
-   phase (not just a text check), and that it closes the hollow-stub gap for real when executed.
-   **Ask for budget confirmation before spending anything here — do not run generate-plan or run
-   without asking first**, per the user's standing instruction from this same conversation.
-10. **Also live, not yet built, lower priority than #9**: a self-test tool for the
+9. ~~Live-validate the behavioral-checks mechanism...~~ **superseded, resolved differently.**
+   Live-validated it twice (~$0.88); the model never chose a behavioral check against a repo with
+   no existing test infrastructure, and the user correctly stopped the direction of "teach it to
+   scaffold one" as hardcoding-in-disguise, then reframed the whole goal: full behavioral-test
+   generation was reaching past `FRD.md` §1's own explicit boundary ("process integrity, not code
+   correctness... human review of generated code remains load-bearing"). **Decision, final**: keep
+   the generic `command`/`supporting_files` schema (free capability for a repo that has test
+   tooling); do not chase making the model invent scaffolding for one that doesn't. Not open.
+9a. A related thread this spawned, also now closed: whether some phases getting `checks: None`
+    was a bug or a concerning self-correction-retreat pattern. Built diagnostic logging for plan
+    generation (`DIAG-1` parity with `Runner`, hermetic, no cost) and then spent one live
+    regeneration (~$0.47) to read it. **Answer: neither** — every phase's `finalize_proposal`
+    succeeded on its first attempt, zero rejections logged anywhere; the variation is genuine,
+    independent, per-run judgment, not a bug. Closed, no action needed.
+10. **Live, not yet built, no fresh evidence pulling it forward**: a self-test tool for the
     implementer's tool-calling loop (dry-run the phase's own check against its uncommitted draft
     before calling `finalize_edits`, informational only — `QA-2`'s real verdict still only comes
     from the independent post-commit verifier run). Floated during the third-run debugging as the
@@ -179,9 +187,25 @@ template to it.
     built speculatively — the failure that prompted the idea turned out to have a narrower root
     cause (check invisibility, now fixed). Worth returning to only with fresh evidence that the
     model, correctly informed about its checks, still can't satisfy them.
-11. Only after that: finish `IMPLEMENTATION-PLAN.md` Phase B (B1 `ENV-5` spike, B2 private
-    feeds) — independent, lower priority than the pivot above.
-12. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6) — still bears on
+11. **Genuinely next, if picked up**: finish `IMPLEMENTATION-PLAN.md` Phase B — B1 (`ENV-5`
+    spike, implementer-only sandboxing) and B2 (private package feeds). Independent of the whole
+    pivot above; the only remaining open item from the *original* phase sequence (A–F all built
+    and run at least once; the pivot was extra work the first live run's evidence demanded).
+12. **Tracked idea, not evidence-earned, not started**: `KNOWLEDGE-1`'s v2 promotion — giving the
+    researcher and/or implementer live access to an authoritative documentation source (e.g.
+    Microsoft Learn's MCP server), raised when discussing the hollow-stub problem and explicitly
+    separated from it (docs grounding improves content quality; it does not fix a check's
+    inability to distinguish real code from a stub — that's a different problem, already
+    resolved above by *not* chasing it further). Real scope if picked up: a new live network
+    dependency, a `DISCLOSE-1`-style policy for what gets sent to it, and failure/timeout handling
+    mid-run. Needs its own dedicated design conversation, not a bolt-on.
+13. **Tracked idea, explicitly not to be built without being asked again**: reusing a
+    generation run's own research findings across phases (so phase 4 doesn't re-discover what
+    phase 3 already found) — user asked about this as a "knowledge graph" question, was told the
+    narrow version is cheap and evidence-earned (six `generate-plan` calls this session each
+    re-researched everything from scratch) but explicitly said not to build it: "Dont change it,
+    it was just a question."
+14. **Deprioritized: the Strands Agents SDK evaluation** (`FRD.md` §8 item 6) — still bears on
     `ENV-3/4`/`TELEMETRY-*`/`PROVIDER-*`, all v2/won't-do, and now also plausibly relevant to the
     agentic-implementer redesign in point 3 above (multi-agent/tool-calling support) — worth a
     fresh look through that lens specifically, not just the original one.
