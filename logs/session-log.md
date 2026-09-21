@@ -2419,3 +2419,81 @@ quick patch; (2) whether phase 3's real, passing behavioral test is itself evide
 behavioral-check ceiling from two entries ago ("the model won't invent test scaffolding without
 grounding") is now *resolved* by the MCP promotion, rather than merely worked around -- worth
 testing again on a future run before treating it as confirmed.
+
+---
+
+### 2026-09-21 — Product-shape planning: a single-command entry point, then a web UI on top. Design only, nothing built, usage ran low mid-conversation
+
+With `KNOWLEDGE-1`'s v2 promotion closed and both live-validated, user shifted from "what feature
+comes next" to "how does anyone actually run this" -- asked for a plan document ahead of anything
+else being built, since usage was running out. **This entry is planning only; zero code changed.**
+
+**User's stated vision, in their own shape**: a single kickoff line to start a run today; later,
+installable via something like `npx` or by downloading the repo and pointing it at a folder.
+Point the tool at a codebase folder and an audit file; the audit file gets "ingested," and the
+tool dynamically determines the steps. Eventually, a web interface: two selectors (a folder
+picker for the codebase, a single-file picker for the audit), the page dynamically transforms
+into a full project plan (informed by MCP research, per the just-built promotion), a big button
+to start the actual process, and live status while it runs.
+
+**Assistant's response, asked to "think first, reframe it" before any build plan was finalized.**
+Checked the vision against what's actually built, rather than treat it as all-new:
+
+- **The "folder + audit file -> dynamically determined steps" mental model is already exactly
+  what's built**, not a new idea to design -- `generate-plan` already ingests an audit findings
+  file and dynamically produces a plan, now MCP-grounded. What's missing is packaging: today
+  that requires three separate CLI invocations (the knowledge pack's own audit CLI, then
+  `generate-plan`, then `run`), each with several required flags, before a run actually starts.
+- **The web UI's four pieces all map onto primitives that already exist**: the folder/audit
+  selectors are `--fixture`/`--findings`; "the page dynamically transforms into a full project
+  plan" is rendering `generate-plan`'s JSON output; the big start button *is* `APPROVAL-1`'s
+  existing gate, today a CLI y/N prompt; "live status" is the event log and diagnostic log,
+  today printed to a terminal, that would need to stream to a browser instead of new machinery.
+- **This project already has a considered, written-down position on exactly this category of
+  idea**: `OpenBot`, an optional chat/UI front-end, was designed for and explicitly deferred to
+  v2 with the stated principle "headless-first enforces the UI never becomes load-bearing, for
+  free." A web UI here is the same category of thing (an attached UI over a headless core) --
+  not a new decision, continuity with an old one. Applied the same discipline: single-command
+  headless flow first, web UI as a separate, later-scoped follow-on built *on top of* that same
+  unified entry point, not a parallel code path.
+- **Two things flagged explicitly, not glossed over, before agreeing to build anything**:
+  1. *"Easy to start" must not become "easy to skip the gate."* `APPROVAL-1`'s guarantee -- no
+     write happens before an operator sees and approves the plan -- is load-bearing. A single
+     command must default to generate → present → pause for approval (matching today's
+     behavior), with an explicit opt-in flag for unattended runs (mirroring today's `--yes`), not
+     silently collapse generation and execution into one unreviewable step.
+  2. *"npx" is a Node/JS distribution convention; this control plane is Python.* Not a blocker,
+     but a real decision, not a default to assume either way: a Python-native equivalent
+     (`pipx run`, a packaged standalone binary) versus a genuinely hybrid shape (a small Node/JS
+     wrapper -- the thing `npx` actually launches -- starting a local web server that shells out
+     to the Python CLI underneath). Left open, not decided.
+
+**Agreed plan, in order**:
+1. **A single-command CLI entry point first** (new top-level command, e.g. `installgraph migrate
+   --repo <path> --audit <path>`, doing what today's separate `generate-plan` + `run` invocations
+   do in sequence, still pausing at the exact same `APPROVAL-1` gate unless an explicit
+   unattended flag is given). Settings that don't belong on a command line by the time this is
+   "one line" (MCP server config, model choice, budgets) move to a config file, read once,
+   overridable by CLI flags. The existing `generate-plan`/`run` subcommands stay as lower-level
+   building blocks underneath this, not replaced.
+2. **A web UI second, explicitly separate and later-scoped**, built as a thin layer over the
+   same unified entry point from step 1 -- not designed in full now. Distribution-format question
+   (Python-native vs. Node/JS wrapper) to be resolved when this step is actually picked up, not
+   pre-decided here.
+3. **Actual packaging/distribution (real `npx`-equivalent or `pip`/`pipx`-based install) last**,
+   once the single-command tool itself is stable.
+
+**Explicitly not yet decided, flagged for whoever picks this up**: whether the single command
+should be able to *optionally* invoke a knowledge pack's own audit CLI as a convenience first
+step when given a repo but no pre-existing audit file (still shelling out to the pack's own CLI,
+never absorbing that logic into the control plane, preserving "the audit is 100% external"), or
+whether an audit file should always be a required, separately-produced input. Also not decided:
+the config file's format/location, and the exact shape of the new top-level command's flags.
+
+**What remains exactly as built, untouched by this entry**: everything -- this was a planning
+conversation only, triggered by usage running low mid-session, with an explicit instruction to
+document rather than start building. No code was written or changed.
+
+**To resume cold**: read this entry in full, confirm the three-step sequencing and the two open
+questions above still match what's wanted, then start with step 1 (the single-command CLI) --
+it is the cheapest, highest-leverage piece, and both later steps depend on it existing first.

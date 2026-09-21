@@ -9,6 +9,56 @@ This file is the resumption point. If a session restarts (usage limit, compactio
 
 ## Next action
 
+## 🗺 PRODUCT-SHAPE PLAN AGREED, 2026-09-21 — read this first, nothing built yet
+
+Every feature-level thread (the architectural pivot, the research loop, `KNOWLEDGE-1`'s MCP
+promotion) is now built and live-validated — see the decision log below. The session then
+shifted from "what feature next" to "how does anyone actually run this," and usage ran low
+before any of it got built. **This section is the resumption pointer for that: a design only,
+agreed with the user, zero code written.** Full narrative in `logs/session-log.md`'s
+"Product-shape planning" entry (2026-09-21) — read that in full before writing any code here.
+
+**User's vision**: one command to start a run today; eventually installable via something like
+`npx` or a downloaded repo pointed at a folder. Point the tool at a codebase folder and an audit
+file; the audit gets "ingested" and the tool dynamically determines the steps (this part is
+**already built** — `generate-plan` already does exactly this, now MCP-grounded — the gap is
+packaging, not logic: today it takes three separate CLI invocations with many flags). Eventually,
+a web UI: folder selector + audit-file selector, the page dynamically renders a full project
+plan, a big button starts the run, and live status streams while it works.
+
+**Agreed sequencing, in order — do not skip ahead to a later step**:
+1. **A single-command CLI entry point first** (e.g. `installgraph migrate --repo <path> --audit
+   <path>`), collapsing today's separate `generate-plan` + `run` invocations into one, still
+   pausing at the exact same `APPROVAL-1` gate by default (explicit opt-in flag, mirroring
+   today's `--yes`, for unattended runs) — **"easy to start" must never become "easy to skip the
+   gate."** Settings that don't belong on a one-line command (MCP server config, model, budgets)
+   move to a config file, overridable by CLI flags. Today's `generate-plan`/`run` subcommands
+   stay underneath as building blocks, not replaced.
+2. **A web UI second, separately scoped**, built as a thin layer over the *same* unified entry
+   point from step 1 — not a parallel code path. This project already has a considered, written
+   position on this category of idea: `OpenBot` (an optional chat/UI front-end) was designed for
+   and explicitly deferred to v2 with the stated principle "headless-first enforces the UI never
+   becomes load-bearing, for free." Apply the same discipline here, don't re-litigate it. The two
+   selectors map to `--fixture`/`--findings`; "dynamically transforms into a plan" is rendering
+   `generate-plan`'s existing JSON output; the start button *is* `APPROVAL-1`'s existing gate;
+   "live status" is the existing event log + diagnostic log, streamed instead of printed.
+3. **Actual packaging/distribution last**, once the single-command tool is stable. `npx` is a
+   Node/JS convention; this control plane is Python — not a blocker, but a real, undecided
+   choice: a Python-native path (`pipx run`, a packaged binary) versus a genuinely hybrid shape
+   (a small Node/JS wrapper — the thing `npx` actually launches — starting a local web server
+   that shells out to the Python CLI). Decide when this step is actually picked up.
+
+**Explicitly not yet decided**: whether the single command should optionally invoke a knowledge
+pack's own audit CLI as a convenience when given a repo but no audit file yet (still shelling out
+to the pack's CLI, never absorbing that logic — "the audit is 100% external" stays true), or
+whether an audit file should always be a required, separately-produced input. Also open: the
+config file's format/location, and the new command's exact flag shape.
+
+**Concrete first step for whoever picks this up**: build item 1 above (the single-command CLI).
+It is the cheapest, highest-leverage piece, and item 2 depends on it existing first.
+
+---
+
 **Phase A (the no-LLM vertical slice) is built and passing, as of 2026-09-18.** This is the first code in the project. It lives in `controlplane/` (the governance-spine package), `fixtures/sample-dotnet-app/` (a small synthetic .NET stand-in target — a real .NET Framework repo, or the stretch-goal `alloy-mvc-template` below, is Phase B/C territory, not this), `fixtures/sample-dotnet-app-edits/` (the scripted implementer's literal edits), and `plans/sample-plan.json` (the hand-authored plan). Run it with `python -m controlplane.cli run` (interactive) or `--yes` (auto-approve, for demo/CI).
 
 Verified live, end-to-end, against real `git`/`dotnet` processes (not mocked): baseline capture + dirty-tree refusal (`INTEGRITY-1`), dedicated run branch that never touches a pre-existing branch (`INTEGRITY-9`), operator-authored plan committed as the branch's control-plane-only first commit (`PLAN-1`), baseline checks run before the gate with a genuinely pre-existing failing test handled as a non-blocking delta (`QA-5`), the full gate content including a real planted-secret finding with forced acknowledgment (`SECRET-1`) and the disclosure policy (`DISCLOSE-1`), accept-all-or-abort with byte-identical restore and branch deletion on rejection (`APPROVAL-5`), exactly one commit per phase (`INTEGRITY-2`), a deliberately out-of-scope phase-3 edit caught and halted fail-closed with a full escalation report (`INTEGRITY-3`, `ESCALATE-1/2`), and the event log committed into the run branch at the plan commit and each `PHASE_COMMITTED` (`EXEC-6`). `QA-2`'s determinism claim (verdict from exit code, never from a check's own claimed output) is proven by `controlplane/tests/test_checks_determinism.py`, including the sharp case of an artifact that falsely claims a clean pass while the process exits non-zero. 11/11 hermetic unit tests pass (`python -m unittest discover -s controlplane/tests`) — `TEST-1`.
